@@ -1,0 +1,88 @@
+# RobotFaultLab — increment 1: cross-check fault disambiguation (simulation only)
+
+Given sensor logs from a simulated AUV (IMU, DVL, depth), rank which fault is
+present among **IMU mounting rotation (about x/y/z), IMU↔DVL timestamp offset,
+DVL dropout, healthy**, abstain when the data is outside that set, and name the
+next motion test to run when the evidence is weak. Evaluation is blinded: fault
+labels and magnitudes live only in the evaluator.
+
+Nothing here is hardware, control, camera, pool or firmware work.
+
+## Layout
+
+| file | side | role |
+|---|---|---|
+| `robotfaultlab/types.py` | neutral | `SensorLog` dataclass, `validate()` (drops non-finite rows, rejects empty/short/mis-shaped/non-monotonic input). Imports only numpy. |
+| `robotfaultlab/sim.py` | evaluator | motion profiles + fault injection on top of **AUVSimBench's `dynamics.py`** (imported from `sources/AUVSimBench`, Apache-2.0, unmodified). Returns `SensorLog` (sensor-only) and `Secret` (truth) as separate objects. |
+| `robotfaultlab/diagnose.py` | diagnostic | takes `SensorLog`(s) only. Four checks + hand-set rule table → ranking, abstention, next test. Imports `types.py` only; a fresh-process test asserts that importing it loads neither `sim`, `evaluate` nor `auv_sim_bench`. |
+| `robotfaultlab/frameforge.py` | baseline | exports CSVs and runs the **unmodified upstream FrameForge binary** (`gravity`, `timestamps`). Nothing from FrameForge is copied (no LICENSE upstream). Timeout, unexpected exit code, empty/malformed output or a missing required finding raise `FrameForgeError`; the verdict is then `error`, never `healthy`. |
+| `robotfaultlab/frameforge_profile.yaml` | baseline | FrameForge robot profile for the AUVSimBench generic vehicle (9.81 m/s², IMU 100 Hz, DVL 8 Hz). |
+| `robotfaultlab/evaluate.py` | evaluator | dev/holdout case lists, sequential protocol, scoring, report. |
+| `robotfaultlab/__main__.py` | CLI | `demo`, `eval`, `frameforge`. |
+| `tests/test_robotfaultlab.py` | | ranking on dev cases, determinism, sequential protocol, score denominators, real-binary adapter test (skipped if no binary). |
+| `tests/test_boundary.py` | | subprocess `sys.modules` boundary, relabeling invariance, non-finite/empty/short/mis-shaped/zero-signal inputs, adapter failure modes via fake executables. |
+
+### What is reused vs new
+- **AUVSimBench** (`sources/AUVSimBench/auv_sim_bench/dynamics.py`): 6-DOF physics, quaternion helpers. Sensor sampling in `sim.py` mirrors `sim_node.py`'s IMU/DVL/depth publishing without ROS (rates from `config/sim.yaml`). Its DVL-dropout semantic (drop messages in a window) is reproduced.
+- **FrameForge**: invoked externally as the "existing checks" baseline. Its gravity dominant-axis rule and DVL gap rule are also re-expressed in `simple_checks()` so the baseline can be scored without the binary.
+- **New** (`diagnose.py`): `imu_dvl_check` — joint time-lag × rotation fit (Kabsch, gravity-anchored) between IMU-derived and DVL-derived body acceleration; `depth_dvl_check` — DVL vertical velocity through IMU attitude vs depth rate; the rule table, abstention gates and next-test rule.
+
+## Run
+
+Interpreter: `/Library/Frameworks/Python.framework/Versions/3.12/bin/python3` (CPython 3.12.4, numpy 2.1.3, pytest 9.1.0), which is also what `python3` on PATH resolves to here via `/usr/local/bin/python3`. Homebrew and `/usr/bin/python3` lack numpy. Nothing was installed.
+
+```bash
+python3 -m pytest tests/ -q
+python3 -m robotfaultlab demo --fault mount_z30 --profile hover      # abstains, requests surge_pulses, then resolves
+python3 -m robotfaultlab eval --split dev
+python3 -m robotfaultlab eval --split holdout --frameforge --verbose  # ~55 s; needs the frameforge binary
+python3 -m robotfaultlab frameforge --fault dropout_3s --profile surge_pulses
+```
+
+FrameForge binary lookup: `$ROBOTFAULTLAB_FRAMEFORGE`, then `/tmp/robotfaultlab-frameforge/bin/frameforge`, then `sources/FrameForge/zig-out/bin/frameforge`. The real-binary test is skipped if none exists; the fake-executable failure tests always run. To build the binary without touching the upstream tree, point every Zig cache outside it:
+
+```bash
+cd sources/FrameForge && /opt/homebrew/bin/zig build --prefix /path/out --cache-dir /path/cache --global-cache-dir /path/global
+export ROBOTFAULTLAB_FRAMEFORGE=/path/out/bin/frameforge
+```
+
+## Protocol and blinding
+1. Evaluator builds a `Secret` (family, profile, seed, params) and calls `generate()` → `SensorLog` with only `imu_t, imu_acc, imu_gyro, imu_q, dvl_t, dvl_v, depth_t, depth`.
+2. `diagnose([log])` returns a ranking over 6 named hypotheses (`healthy, mount_rotation_{x,y,z}, timestamp_offset, dvl_dropout`), possibly headed by `abstain`, and an optional `next_test`.
+3. If `next_test` is set, the evaluator regenerates the **same hidden fault** under that motion profile (new seed) and calls `diagnose(all_logs)`; at most 2 extra tests.
+4. Scoring is at family level (`mount_rotation_*` → `mount_rotation`). Denominators are all cases of a family **including abstentions**. Abstaining on a known fault counts as wrong; abstaining on `unknown` truth counts as correct. top3 is over the 6 named hypotheses, not over 3 candidates; at family level only 4 known families exist, so top3 is weak evidence and top1 is the number that matters.
+
+Thresholds in `diagnose.TH` were set by hand from the **dev** split only (20° mounts, 0.2 s offset, 3 s dropout; `forward_cruise`, `surge_pulses`, `hover`). The holdout split was run once after they were frozen.
+
+## Results (2026-10-26, after the review corrections, thresholds unchanged; not independently verified)
+
+Test suite: 26 passed with the interpreter above (`python3 -m pytest tests/ -q`).
+
+Dev split (26 cases): 26/26 top1, 0 abstentions, 0 healthy false alarms, 11 extra tests.
+
+Holdout split — held-out magnitudes (8°/35°/60°, 0.06/0.12/0.5 s, 1 s/6 s), held-out profiles (`yaw_sweep`, `depth_bob`, `random_wrench`), and two fault kinds outside the hypothesis set (DVL scale ×1.3, accelerometer x-bias 0.6 m/s²):
+
+```
+split=holdout  cases=54  abstentions=6  extra_tests_requested=31  healthy_false_alarms=0
+family               n    top1    top3  abstain  extra  simple  frameforge
+healthy              6   6/6     6/6        0      4    6/6         6/6
+mount_rotation      27  27/27   27/27       0     19    6/27        6/27
+timestamp_offset     9   9/9     9/9        0      6    0/9         0/9
+dvl_dropout          6   6/6     6/6        0      0    6/6         6/6
+unknown              6   6/6     6/6        6      2    0/6         0/6
+```
+`simple` = FrameForge-equivalent gravity-axis + DVL-gap rules; `frameforge` = the upstream binary on exported CSVs. Both catch dropouts and only the 60° roll/pitch mounts (gravity leaves the z-axis dominant below 45°); neither can see yaw mounts, timestamp offsets, or abstain. The cross-check resolves all of them here, with 0.57 extra tests per case on average.
+
+**Read these numbers in context**: the simulator is clean. Noise is small white Gaussian (accel 0.05 m/s², gyro 0.005 rad/s, DVL 0.01 m/s, depth 0.01 m), there are no biases, scale errors, drift, or latency on the healthy sensors, the vehicle self-rights so "level at rest" holds, and faults are injected one at a time. 100% on 54 cases is a statement about this regime, not about real logs.
+
+## Limitations and deferred items
+- **Noise/realism holdout not done.** Magnitudes and profiles are held out; noise levels, sensor biases, and multi-fault cases are not. Expect the `unexplained_mps2` gate (0.2 m/s², healthy floor ≈0.09) to need re-tuning with realistic noise.
+- **"Level at rest" prior.** The rotation fit is anchored on mean specific force ≈ body +Z, the same assumption FrameForge's gravity check makes. A vehicle that genuinely trims at a roll angle is indistinguishable from a roll-mounted IMU with these sensors. A roll/pitch mount is confirmed independently by the depth cross-check only when there is forward or vertical motion.
+- **Gyro term approximation.** The DVL-side acceleration uses `ω × v` with the gyro in the IMU frame (`# ponytail:` in `diagnose.py`); exact only for small mount angles or low angular rates. It did not hurt at 60° under `yaw_sweep` here, but is a known ceiling.
+- **Next-test selection is a two-row rule table**, not an information-gain computation: low excitation → `surge_pulses`; mount-vs-offset tie → `depth_bob`. Both extra profiles are fixed; the diagnostic cannot design its own.
+- **Lag grid** is ±1 s at 10 ms steps; offsets outside that or DVL rates where 10 ms is coarse are untested. Sign convention: positive = IMU clock ahead.
+- **Unknown faults**: only two kinds, both abstained; a fault that happens to be well explained by lag+rotation (e.g. a small accelerometer bias → apparent 3° tilt) would be classified, not abstained.
+- **Not integrated with ROS bags**: input is the `SensorLog` dataclass; a `rosbag2`/CSV loader is the next integration step (FrameForge's planned bag ingest would be the natural source).
+- **FrameForge adapter** runs only `gravity` and `timestamps`; `compare` would need two orientation streams the sim does not produce.
+- **Input validation is structural only.** `validate()` drops non-finite rows and rejects empty, short, mis-shaped or non-monotonic logs; it does not detect plausible-but-wrong units or clock domains.
+- Not independently verified; no git commit made.

@@ -1,0 +1,19 @@
+# FrameForge robot profile for the AUVSimBench generic vehicle (config/sim.yaml rates).
+robot: auv_sim_bench
+world_frame: odom
+base_frame: base_link
+conventions:
+  world: ENU
+  body: FLU
+  gravity_magnitude: 9.81
+  gravity_tol: 0.3
+sensors:
+  - topic: imu/data
+    type: sensor_msgs/Imu
+    frame: imu_link
+    convention: FLU
+    rate_hz: 100
+  - topic: dvl/odometry
+    type: nav_msgs/Odometry
+    frame: dvl_link
+    rate_hz: 8
