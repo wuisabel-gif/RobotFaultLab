@@ -64,7 +64,24 @@ def holdout_cases() -> list[Secret]:
     return out
 
 
-SPLITS = {"dev": dev_cases, "holdout": holdout_cases}
+def hard_cases() -> list[Secret]:
+    """Sensor realism the thresholds were never tuned on (frozen; failures are reported as is):
+    trimmed vehicle (level-at-rest prior violated), NaN beam loss instead of clean gaps,
+    IMU clock rate drift instead of a fixed offset, gyro bias, sparse random DVL NaNs."""
+    out = []
+    for prof in ("yaw_sweep", "random_wrench", "trimmed_hover"):
+        for seed in (20, 21):
+            out.append(Secret("healthy", prof, seed))
+        out.append(Secret("dvl_dropout", prof, 20, dict(start_s=8.0, duration_s=3.0, nan=True)))
+        for drift in (0.005, 0.02):
+            out.append(Secret("timestamp_offset", prof, 20, dict(drift=drift)))
+        out.append(Secret("unknown", prof, 20, dict(kind="gyro_bias", bias_rps=0.05)))
+        out.append(Secret("unknown", prof, 20, dict(kind="dvl_beam_loss", frac=0.3)))
+    out += [_mount(ax, 20.0, "trimmed_hover", 20) for ax in "xyz"]
+    return out
+
+
+SPLITS = {"dev": dev_cases, "holdout": holdout_cases, "hard": hard_cases}
 
 
 def run_case(secret: Secret, with_frameforge=False) -> dict:

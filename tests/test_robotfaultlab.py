@@ -84,3 +84,23 @@ def test_frameforge_adapter_runs_upstream_binary():
     assert v["verdict"] == "dvl_dropout"
     assert any(fid == "timestamps/gaps" and sev == "WARN" for sev, fid, _ in v["findings"])
     assert frameforge.frameforge_verdict(_log("healthy"))["verdict"] == "healthy"
+
+
+def test_hard_split_injections():
+    from robotfaultlab.types import validate
+    base, _ = generate(Secret("healthy", "yaw_sweep", 20))
+    nan_log, _ = generate(Secret("dvl_dropout", "yaw_sweep", 20, dict(start_s=8.0, duration_s=3.0, nan=True)))
+    assert len(nan_log.dvl_t) == len(base.dvl_t) and np.isnan(nan_log.dvl_v).any()
+    v = validate(nan_log)
+    assert np.diff(v.dvl_t).max() > 2.9            # NaN window becomes a gap after validation
+    drift, _ = generate(Secret("timestamp_offset", "yaw_sweep", 20, dict(drift=0.02)))
+    assert np.isclose(drift.imu_t[-1] - base.imu_t[-1], 0.02 * base.imu_t[-1])
+    loss, _ = generate(Secret("unknown", "yaw_sweep", 20, dict(kind="dvl_beam_loss", frac=0.3)))
+    assert 0.15 < np.isnan(loss.dvl_v[:, 0]).mean() < 0.45
+    gb, _ = generate(Secret("unknown", "yaw_sweep", 20, dict(kind="gyro_bias", bias_rps=0.05)))
+    assert np.allclose(gb.imu_gyro[:, 0] - base.imu_gyro[:, 0], 0.05)
+    trim, _ = generate(Secret("healthy", "trimmed_hover", 20))
+    pitch = np.degrees(np.arctan2(trim.imu_acc[:, 0].mean(), trim.imu_acc[:, 2].mean()))
+    assert 8.0 < abs(pitch) < 30.0                  # vehicle really holds a trim
+    assert all(s.family in ("healthy", "mount_rotation", "timestamp_offset", "dvl_dropout", "unknown")
+               for s in evaluate.hard_cases())
