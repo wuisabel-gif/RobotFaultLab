@@ -23,7 +23,7 @@ def _log(fam, prof="surge_pulses", seed=0, **params):
 
 
 # ---- process-level import boundary -------------------------------------------------
-@pytest.mark.parametrize("module", ["robotfaultlab.types", "robotfaultlab.diagnose", "robotfaultlab.frameforge"])
+@pytest.mark.parametrize("module", ["robotfaultlab.types", "robotfaultlab.diagnose", "robotfaultlab.frameforge", "robotfaultlab.bag"])
 def test_diagnostic_side_imports_no_simulator_or_evaluator(module):
     code = (
         "import sys, importlib; sys.path.insert(0, %r); importlib.import_module(%r); "

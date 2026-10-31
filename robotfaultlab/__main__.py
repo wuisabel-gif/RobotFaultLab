@@ -1,12 +1,14 @@
 """CLI:  python3 -m robotfaultlab demo [--fault F] [--profile P]
         python3 -m robotfaultlab eval [--split dev|holdout] [--frameforge] [--verbose]
-        python3 -m robotfaultlab frameforge [--fault F]"""
+        python3 -m robotfaultlab frameforge [--fault F]
+        python3 -m robotfaultlab bag BAG.db3|BAG.mcap [--imu T] [--dvl T] [--pressure T]"""
 from __future__ import annotations
 
 import argparse
 import json
 
 from . import evaluate
+from .bag import TOPICS, load
 from .diagnose import diagnose, simple_checks
 from .sim import PROFILES, Secret, generate
 
@@ -33,6 +35,10 @@ def main(argv=None):
     f = sub.add_parser("frameforge")
     f.add_argument("--fault", choices=FAULTS, default="mount_x30")
     f.add_argument("--profile", choices=PROFILES, default="hover")
+    b = sub.add_parser("bag", help="diagnose a rosbag2 recording (needs $ROBOTFAULTLAB_ROS2BAG)")
+    b.add_argument("path")
+    for k, v in TOPICS.items():
+        b.add_argument(f"--{k}", default=v)
     a = ap.parse_args(argv)
 
     if a.cmd == "demo":
@@ -61,6 +67,13 @@ def main(argv=None):
             print(f"{sev:5} [{fid}] {summary}")
         print("frameforge verdict:", v["verdict"], "| simple-checks:", simple_checks(log),
               "| cross-check top1:", diagnose(log).top1, f"| secret: {secret.family}")
+    elif a.cmd == "bag":
+        log = load(a.path, {k: getattr(a, k) for k in TOPICS})
+        print(f"imu {len(log.imu_t)} dvl {len(log.dvl_t)} depth {len(log.depth_t)} samples")
+        d = diagnose(log)
+        print("checks:", json.dumps(d.checks, indent=1, default=str))
+        print("notes:", d.notes)
+        print("ranking:", d.ranking, "| next test:", d.next_test, "| simple-checks:", simple_checks(log))
 
 
 if __name__ == "__main__":
