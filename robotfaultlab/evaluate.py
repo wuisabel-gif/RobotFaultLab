@@ -69,15 +69,15 @@ def hard_cases() -> list[Secret]:
     trimmed vehicle (level-at-rest prior violated), NaN beam loss instead of clean gaps,
     IMU clock rate drift instead of a fixed offset, gyro bias, sparse random DVL NaNs."""
     out = []
-    for prof in ("yaw_sweep", "random_wrench", "trimmed_hover"):
+    for prof, trim in (("yaw_sweep", 0.0), ("random_wrench", 0.0), ("forward_cruise", 0.9)):
         for seed in (20, 21):
-            out.append(Secret("healthy", prof, seed))
-        out.append(Secret("dvl_dropout", prof, 20, dict(start_s=8.0, duration_s=3.0, nan=True)))
+            out.append(Secret("healthy", prof, seed, trim_nm=trim))
+        out.append(Secret("dvl_dropout", prof, 20, dict(start_s=8.0, duration_s=3.0, nan=True), trim))
         for drift in (0.005, 0.02):
-            out.append(Secret("timestamp_offset", prof, 20, dict(drift=drift)))
-        out.append(Secret("unknown", prof, 20, dict(kind="gyro_bias", bias_rps=0.05)))
-        out.append(Secret("unknown", prof, 20, dict(kind="dvl_beam_loss", frac=0.3)))
-    out += [_mount(ax, 20.0, "trimmed_hover", 20) for ax in "xyz"]
+            out.append(Secret("timestamp_offset", prof, 20, dict(drift=drift), trim))
+        out.append(Secret("unknown", prof, 20, dict(kind="gyro_bias", bias_rps=0.05), trim))
+        out.append(Secret("unknown", prof, 20, dict(kind="dvl_beam_loss", frac=0.3), trim))
+    out += [Secret("mount_rotation", "forward_cruise", 20, dict(axis=ax, angle_deg=20.0), 0.9) for ax in "xyz"]
     return out
 
 
@@ -91,7 +91,7 @@ def run_case(secret: Secret, with_frameforge=False) -> dict:
     diag = diagnose(logs)
     while diag.next_test and len(extra) < MAX_EXTRA:
         extra.append(diag.next_test)
-        new_log, _ = generate(Secret(secret.family, diag.next_test, secret.seed + 100, secret.params))
+        new_log, _ = generate(Secret(secret.family, diag.next_test, secret.seed + 100, secret.params, secret.trim_nm))
         logs.append(new_log)
         diag = diagnose(logs)
     named = [h for h, _ in diag.ranking if h != ABSTAIN]

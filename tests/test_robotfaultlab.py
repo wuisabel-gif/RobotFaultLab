@@ -99,8 +99,20 @@ def test_hard_split_injections():
     assert 0.15 < np.isnan(loss.dvl_v[:, 0]).mean() < 0.45
     gb, _ = generate(Secret("unknown", "yaw_sweep", 20, dict(kind="gyro_bias", bias_rps=0.05)))
     assert np.allclose(gb.imu_gyro[:, 0] - base.imu_gyro[:, 0], 0.05)
-    trim, _ = generate(Secret("healthy", "trimmed_hover", 20))
+    trim, _ = generate(Secret("healthy", "forward_cruise", 20, trim_nm=0.9))
     pitch = np.degrees(np.arctan2(trim.imu_acc[:, 0].mean(), trim.imu_acc[:, 2].mean()))
     assert 8.0 < abs(pitch) < 30.0                  # vehicle really holds a trim
     assert all(s.family in ("healthy", "mount_rotation", "timestamp_offset", "dvl_dropout", "unknown")
                for s in evaluate.hard_cases())
+
+
+def test_clock_drift_and_trim_resolved():
+    # IMU clock rate error: the lag fit reports a drift and names the timestamp family
+    d = diagnose(generate(Secret("timestamp_offset", "random_wrench", 20, dict(drift=0.02)))[0])
+    assert d.top1 == "timestamp_offset" and abs(d.checks["imu_dvl"]["drift"] - 0.02) < 0.006
+    # Trimmed healthy vehicle: gravity prior dropped, depth check says imu_q is right -> healthy
+    r = evaluate.run_case(Secret("healthy", "forward_cruise", 20, trim_nm=0.9))
+    assert r["top1"] == "healthy" and not r["abstained"]
+    # ...while a real pitch mount on the same trimmed vehicle is still caught
+    r = evaluate.run_case(Secret("mount_rotation", "forward_cruise", 20, dict(axis="y", angle_deg=20.0), 0.9))
+    assert r["top1"] == "mount_rotation_y"

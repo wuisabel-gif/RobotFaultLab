@@ -26,6 +26,7 @@ from auv_sim_bench.dynamics import AUVDynamics, AUVParams, quat_mul, quat_to_rot
 
 SIM_HZ, IMU_HZ, DVL_HZ, DEPTH_HZ = 200.0, 100.0, 8.0, 5.0
 DURATION_S = 20.0
+START_DEPTH_M = 5.0      # sim.yaml starts at the surface, where depth = max(0, -z) clips during bobbing
 NOISE = dict(acc=0.05, gyro=0.005, dvl=0.01, depth=0.01)
 
 
@@ -35,6 +36,7 @@ class Secret:
     profile: str
     seed: int
     params: dict = field(default_factory=dict)
+    trim_nm: float = 0.0     # constant pitch torque (vehicle property, persists across extra tests)
 
 
 # ---- motion profiles: t -> (force_body, torque_body) ---------------------------------
@@ -59,12 +61,6 @@ def _depth_bob(t, rng):
     return np.array([15.0, 0, 30.0 * np.sin(0.8 * t)]), np.zeros(3)
 
 
-def _trimmed_hover(t, rng):
-    # constant pitch torque against the 0.02 m metacentric restoring moment (~2.9 N m max)
-    # holds the vehicle ~18 deg nose-up: violates the diagnostic's level-at-rest prior
-    return np.array([15.0, 0, 0]), np.array([0, 0.9, 0])
-
-
 def _random_wrench(t, rng):
     # piecewise-constant random wrench, redrawn every second from the case rng
     k = int(t)
@@ -75,7 +71,6 @@ def _random_wrench(t, rng):
 PROFILES = {
     "hover": _hover, "forward_cruise": _forward_cruise, "surge_pulses": _surge_pulses,
     "yaw_sweep": _yaw_sweep, "depth_bob": _depth_bob, "random_wrench": _random_wrench,
-    "trimmed_hover": _trimmed_hover,
 }
 
 
@@ -86,10 +81,11 @@ def axis_angle_quat(axis: str, angle_deg: float) -> np.ndarray:
     return np.array([np.cos(a), *(np.sin(a) * np.asarray(v, float))])
 
 
-def _simulate(profile: str, seed: int):
+def _simulate(profile: str, seed: int, trim_nm: float = 0.0):
     """Run AUVSimBench dynamics and sample ideal sensors at sim_node's rates."""
     rng = np.random.default_rng(seed)
     sim = AUVDynamics(AUVParams())
+    sim.s.p = np.array([0.0, 0.0, -START_DEPTH_M])
     wrench = PROFILES[profile]
     dt = 1.0 / SIM_HZ
     acc = {"imu": 0.0, "dvl": 0.0, "depth": 0.0}
@@ -98,6 +94,9 @@ def _simulate(profile: str, seed: int):
     t = 0.0
     for _ in range(int(DURATION_S * SIM_HZ)):
         f, tau = wrench(t, seed)
+        # trim: constant pitch torque against the 0.02 m metacentric restoring moment (~2.9 N m
+        # max); 0.9 N m holds ~18 deg nose-up and violates the diagnostic's level-at-rest prior
+        tau = tau + np.array([0.0, trim_nm, 0.0])
         s = sim.step(dt, f, tau)
         t += dt
         for k in acc:
@@ -124,7 +123,7 @@ def _simulate(profile: str, seed: int):
 
 def generate(secret: Secret) -> tuple[SensorLog, Secret]:
     """Apply the secret fault to ideal sensors. Only SensorLog goes to the diagnostic."""
-    log = _simulate(secret.profile, secret.seed)
+    log = _simulate(secret.profile, secret.seed, secret.trim_nm)
     p = secret.params
     fam = secret.family
     if fam == "mount_rotation":
