@@ -59,6 +59,12 @@ def _depth_bob(t, rng):
     return np.array([15.0, 0, 30.0 * np.sin(0.8 * t)]), np.zeros(3)
 
 
+def _trimmed_hover(t, rng):
+    # constant pitch torque against the 0.02 m metacentric restoring moment (~2.9 N m max)
+    # holds the vehicle ~18 deg nose-up: violates the diagnostic's level-at-rest prior
+    return np.array([15.0, 0, 0]), np.array([0, 0.9, 0])
+
+
 def _random_wrench(t, rng):
     # piecewise-constant random wrench, redrawn every second from the case rng
     k = int(t)
@@ -69,6 +75,7 @@ def _random_wrench(t, rng):
 PROFILES = {
     "hover": _hover, "forward_cruise": _forward_cruise, "surge_pulses": _surge_pulses,
     "yaw_sweep": _yaw_sweep, "depth_bob": _depth_bob, "random_wrench": _random_wrench,
+    "trimmed_hover": _trimmed_hover,
 }
 
 
@@ -128,16 +135,27 @@ def generate(secret: Secret) -> tuple[SensorLog, Secret]:
         log.imu_gyro = log.imu_gyro @ Rm
         log.imu_q = np.array([quat_mul(q, qm) for q in log.imu_q])
     elif fam == "timestamp_offset":
-        log.imu_t = log.imu_t + p["offset_s"]    # IMU clock ahead of DVL/depth clock
+        # fixed offset (IMU clock ahead of DVL/depth clock) and/or rate drift of the IMU clock
+        log.imu_t = log.imu_t * (1.0 + p.get("drift", 0.0)) + p.get("offset_s", 0.0)
     elif fam == "dvl_dropout":
-        keep = ~((log.dvl_t >= p["start_s"]) & (log.dvl_t < p["start_s"] + p["duration_s"]))
-        log.dvl_t, log.dvl_v = log.dvl_t[keep], log.dvl_v[keep]
+        win = (log.dvl_t >= p["start_s"]) & (log.dvl_t < p["start_s"] + p["duration_s"])
+        if p.get("nan"):                         # driver keeps publishing, velocities NaN
+            log.dvl_v = log.dvl_v.copy()
+            log.dvl_v[win] = np.nan
+        else:                                    # messages stop
+            log.dvl_t, log.dvl_v = log.dvl_t[~win], log.dvl_v[~win]
     elif fam == "unknown":
         kind = p["kind"]
         if kind == "dvl_scale":
             log.dvl_v = log.dvl_v * p["scale"]
         elif kind == "accel_bias":
             log.imu_acc = log.imu_acc + np.array([p["bias_mps2"], 0, 0])
+        elif kind == "gyro_bias":
+            log.imu_gyro = log.imu_gyro + np.array([p["bias_rps"], 0, 0])
+        elif kind == "dvl_beam_loss":            # sparse random NaN pings, no clean gap
+            r = np.random.default_rng(secret.seed + 7)
+            log.dvl_v = log.dvl_v.copy()
+            log.dvl_v[r.random(len(log.dvl_t)) < p["frac"]] = np.nan
         else:
             raise ValueError(kind)
     elif fam != "healthy":
