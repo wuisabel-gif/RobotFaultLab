@@ -18,8 +18,11 @@ Nothing here is hardware, control, camera, pool or firmware work.
 | `robotfaultlab/frameforge.py` | baseline | exports CSVs and runs the **unmodified upstream FrameForge binary** (`gravity`, `timestamps`). Nothing from FrameForge is copied (no LICENSE upstream). Timeout, unexpected exit code, empty/malformed output or a missing required finding raise `FrameForgeError`; the verdict is then `error`, never `healthy`. |
 | `robotfaultlab/frameforge_profile.yaml` | baseline | FrameForge robot profile for the AUVSimBench generic vehicle (9.81 m/s², IMU 100 Hz, DVL 8 Hz). |
 | `robotfaultlab/evaluate.py` | evaluator | dev/holdout case lists, sequential protocol, scoring, report. |
-| `robotfaultlab/__main__.py` | CLI | `demo`, `eval`, `frameforge`. |
+| `robotfaultlab/bag.py` | loader | rosbag2 (`.db3`/`.mcap`) → `SensorLog`. Decoding is delegated to **ros2bag_convert.py** (Apache-2.0, stdlib-only, [wuisabel-gif/ros2bag_converter](https://github.com/wuisabel-gif/ros2bag_converter)) run as a subprocess via `$ROBOTFAULTLAB_ROS2BAG`; nothing is vendored. Reads `sensor_msgs/Imu`, `nav_msgs/Odometry` (twist = DVL body velocity) and `sensor_msgs/FluidPressure` (depth = (p − atm)/(ρg)), header stamps first, bag receive time as fallback. Imports `types.py` only. |
+| `robotfaultlab/__main__.py` | CLI | `demo`, `eval`, `frameforge`, `bag`. |
 | `tests/test_robotfaultlab.py` | | ranking on dev cases, determinism, sequential protocol, score denominators, real-binary adapter test (skipped if no binary). |
+| `tests/test_bag.py` | | hand-encoded CDR `.db3` bag round-trips through the converter into a `SensorLog` that diagnoses identically to the simulator original; missing topic / layout / converter / non-bag errors. The two converter-backed tests skip without `$ROBOTFAULTLAB_ROS2BAG`. |
+| `.github/workflows/tests.yml` | CI | Python 3.12, numpy 2.1.3, pytest 9.1.0; fetches `ros2bag_convert.py` at a pinned commit, runs `pytest tests`. The FrameForge real-binary test skips in CI (no Zig). |
 | `tests/test_boundary.py` | | subprocess `sys.modules` boundary, relabeling invariance, non-finite/empty/short/mis-shaped/zero-signal inputs, adapter failure modes via fake executables. |
 
 ### What is reused vs new
@@ -37,6 +40,7 @@ python3 -m robotfaultlab demo --fault mount_z30 --profile hover      # abstains,
 python3 -m robotfaultlab eval --split dev
 python3 -m robotfaultlab eval --split holdout --frameforge --verbose  # ~55 s; needs the frameforge binary
 python3 -m robotfaultlab frameforge --fault dropout_3s --profile surge_pulses
+ROBOTFAULTLAB_ROS2BAG=/path/to/ros2bag_convert.py python3 -m robotfaultlab bag run_0.db3   # real recording; --imu/--dvl/--pressure override topics
 ```
 
 FrameForge binary lookup: `$ROBOTFAULTLAB_FRAMEFORGE`, then `/tmp/robotfaultlab-frameforge/bin/frameforge`, then `sources/FrameForge/zig-out/bin/frameforge`. The real-binary test is skipped if none exists; the fake-executable failure tests always run. To build the binary without touching the upstream tree, point every Zig cache outside it:
@@ -56,7 +60,7 @@ Thresholds in `diagnose.TH` were set by hand from the **dev** split only (20° m
 
 ## Results (2026-10-26, after the review corrections, thresholds unchanged; not independently verified)
 
-Test suite: 26 passed with the interpreter above (`python3 -m pytest tests/ -q`).
+Test suite: 31 passed, 1 skipped (FrameForge binary not built) with the interpreter above and `ROBOTFAULTLAB_ROS2BAG` set (`python3 -m pytest tests/ -q`).
 
 Dev split (26 cases): 26/26 top1, 0 abstentions, 0 healthy false alarms, 11 extra tests.
 
@@ -82,7 +86,7 @@ unknown              6   6/6     6/6        6      2    0/6         0/6
 - **Next-test selection is a two-row rule table**, not an information-gain computation: low excitation → `surge_pulses`; mount-vs-offset tie → `depth_bob`. Both extra profiles are fixed; the diagnostic cannot design its own.
 - **Lag grid** is ±1 s at 10 ms steps; offsets outside that or DVL rates where 10 ms is coarse are untested. Sign convention: positive = IMU clock ahead.
 - **Unknown faults**: only two kinds, both abstained; a fault that happens to be well explained by lag+rotation (e.g. a small accelerometer bias → apparent 3° tilt) would be classified, not abstained.
-- **Not integrated with ROS bags**: input is the `SensorLog` dataclass; a `rosbag2`/CSV loader is the next integration step (FrameForge's planned bag ingest would be the natural source).
+- **Bag loader is untested on real recordings**: `bag.py` has only been exercised on a synthetic `.db3` written from simulator output. Real logs will need their topic names passed on the command line, may carry a non-identity IMU-to-body transform the loader does not apply, and the thresholds were never run on real sensor noise.
 - **FrameForge adapter** runs only `gravity` and `timestamps`; `compare` would need two orientation streams the sim does not produce.
 - **Input validation is structural only.** `validate()` drops non-finite rows and rejects empty, short, mis-shaped or non-monotonic logs; it does not detect plausible-but-wrong units or clock domains.
 - Not independently verified; no git commit made.
