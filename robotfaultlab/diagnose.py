@@ -28,7 +28,7 @@ HYPOTHESES = ["healthy", "mount_rotation_x", "mount_rotation_y", "mount_rotation
 ABSTAIN = "abstain"
 TH = dict(gap_s=0.5, lag_s=0.04, rot_deg=5.0, excite_mps2=0.12, excite_strong=0.5,
           evidence_mps2=0.3, unexplained_mps2=0.2, depth_mps=0.1, close=0.2,
-          drift=0.002, depth_excite_mps=0.05)
+          drift=0.002, depth_excite_mps=0.05, gyro_bias_rps=0.02)
 LAG_GRID = np.arange(-1.0, 1.0 + 1e-9, 0.01)
 # IMU clock rate error, searched only when a constant lag cannot close the residual
 DRIFT_GRID = [d * sgn for d in (0.0025, 0.005, 0.01, 0.02, 0.04) for sgn in (1, -1)]
@@ -110,6 +110,27 @@ def gravity_axis_check(log: SensorLog) -> dict:
     tilt = float(np.degrees(np.arccos(np.clip(m[2] / norm, -1, 1))))
     return dict(mean=m.round(3).tolist(), dominant="xyz"[dom], sign=int(np.sign(m[dom])),
                 tilt_deg=round(tilt, 2), fail=bool(dom != 2 or m[2] < 0))
+
+
+def gyro_orientation_check(log: SensorLog) -> dict:
+    """Mean (gyro - rate implied by consecutive imu_q), rad/s, in the IMU frame.  A mount
+    rotates both streams together, a clock fault shifts both together, so only a gyro bias
+    (or an orientation filter that ignores the gyro) leaves a persistent difference.
+    Healthy floor ~1e-3 (0.005 rad/s white noise averaged over 2000 samples)."""
+    q = log.imu_q
+    w0, v0 = q[:-1, :1], q[:-1, 1:]
+    w1, v1 = q[1:, :1], q[1:, 1:]
+    # dq = conj(q_k) * q_{k+1}  (rotation of the IMU frame between samples)
+    dw = w0 * w1 + np.sum(v0 * v1, -1, keepdims=True)
+    dv = w0 * v1 - w1 * v0 - np.cross(v0, v1)
+    n = np.linalg.norm(dv, axis=-1, keepdims=True)
+    ang = 2.0 * np.arctan2(n, np.abs(dw)) * np.sign(dw)      # shortest arc, radians
+    dt = np.diff(log.imu_t)[:, None]
+    rate_q = np.where(n > 1e-12, dv / np.maximum(n, 1e-12) * ang, 0.0) / dt
+    rate_g = 0.5 * (log.imu_gyro[:-1] + log.imu_gyro[1:])
+    bias = (rate_g - rate_q).mean(0)
+    return dict(bias_rps=[round(float(b), 4) for b in bias],
+                bias_norm_rps=round(float(np.linalg.norm(bias)), 4))
 
 
 def dvl_gap_check(log: SensorLog) -> dict:
@@ -255,19 +276,24 @@ def diagnose(logs: list[SensorLog] | SensorLog) -> Diagnosis:
     if not logs:
         raise InvalidSensorLog("diagnose() needs at least one SensorLog")
     logs = [validate(l) for l in logs]          # drops non-finite rows; raises on unusable input
-    per = [dict(gravity=gravity_axis_check(l), gaps=dvl_gap_check(l),
+    per = [dict(gravity=gravity_axis_check(l), gaps=dvl_gap_check(l), gyro=gyro_orientation_check(l),
                 imu_dvl=imu_dvl_check(l), depth=depth_dvl_check(l)) for l in logs]
+    gyro = max((c["gyro"] for c in per), key=lambda c: c["bias_norm_rps"])
     gaps = max((c["gaps"] for c in per), key=lambda g: g["longest_gap_s"])
     cross = max((c["imu_dvl"] for c in per), key=lambda c: c.get("excitation", -1))
     i_depth = max(range(len(per)), key=lambda i: per[i]["depth"]["vertical_excitation"])
     depth = per[i_depth]["depth"]
-    checks = dict(gravity=per[0]["gravity"], gaps=gaps, imu_dvl=cross, depth=depth, n_logs=len(logs))
+    checks = dict(gravity=per[0]["gravity"], gaps=gaps, gyro=gyro, imu_dvl=cross, depth=depth, n_logs=len(logs))
     notes = []
     score = {h: 0.0 for h in HYPOTHESES}
     tests_done = len(logs)
 
     if gaps["longest_gap_s"] > TH["gap_s"]:
         score["dvl_dropout"] = _clip(0.5 + 0.5 * gaps["longest_gap_s"] / TH["gap_s"])
+    if gyro["bias_norm_rps"] > TH["gyro_bias_rps"]:
+        notes.append(f"gyro disagrees with imu_q by a steady {gyro['bias_norm_rps']:.3f} rad/s "
+                     f"(axes {gyro['bias_rps']}): gyro bias, outside the hypothesis set")
+        return Diagnosis([(ABSTAIN, 1.0)] + _ranked(score), checks, None, notes)
 
     if not cross["ok"]:
         notes.append("imu_dvl cross-check inconclusive: " + cross["reason"])

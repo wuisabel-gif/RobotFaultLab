@@ -116,3 +116,14 @@ def test_clock_drift_and_trim_resolved():
     # ...while a real pitch mount on the same trimmed vehicle is still caught
     r = evaluate.run_case(Secret("mount_rotation", "forward_cruise", 20, dict(axis="y", angle_deg=20.0), 0.9))
     assert r["top1"] == "mount_rotation_y"
+
+
+def test_gyro_bias_abstains_with_reason():
+    from robotfaultlab.diagnose import gyro_orientation_check
+    healthy, _ = generate(Secret("healthy", "yaw_sweep", 20))
+    assert gyro_orientation_check(healthy)["bias_norm_rps"] < 0.005
+    mounted, _ = generate(Secret("mount_rotation", "yaw_sweep", 20, dict(axis="z", angle_deg=35.0)))
+    assert gyro_orientation_check(mounted)["bias_norm_rps"] < 0.005   # mount rotates both streams
+    d = diagnose(generate(Secret("unknown", "yaw_sweep", 20, dict(kind="gyro_bias", bias_rps=0.05)))[0])
+    assert d.top1 == ABSTAIN and any("gyro bias" in n for n in d.notes)
+    assert abs(d.checks["gyro"]["bias_rps"][0] - 0.05) < 0.005
