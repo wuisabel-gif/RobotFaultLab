@@ -14,7 +14,7 @@ Nothing here is hardware, control, camera, pool or firmware work.
 |---|---|---|
 | `robotfaultlab/types.py` | neutral | `SensorLog` dataclass, `validate()` (drops non-finite rows, rejects empty/short/mis-shaped/non-monotonic input). Imports only numpy. |
 | `robotfaultlab/sim.py` | evaluator | motion profiles + fault injection on top of **AUVSimBench's `dynamics.py`** (imported from `sources/AUVSimBench`, Apache-2.0, unmodified). Returns `SensorLog` (sensor-only) and `Secret` (truth) as separate objects. |
-| `robotfaultlab/diagnose.py` | diagnostic | takes `SensorLog`(s) only. Four checks + hand-set rule table → ranking, abstention, next test. Imports `types.py` only; a fresh-process test asserts that importing it loads neither `sim`, `evaluate` nor `auv_sim_bench`. |
+| `robotfaultlab/diagnose.py` | diagnostic | takes `SensorLog`(s) only. Five checks + hand-set rule table → ranking, abstention, next test. Imports `types.py` only; a fresh-process test asserts that importing it loads neither `sim`, `evaluate` nor `auv_sim_bench`. |
 | `robotfaultlab/frameforge.py` | baseline | exports CSVs and runs the **unmodified upstream FrameForge binary** (`gravity`, `timestamps`). Nothing from FrameForge is copied (no LICENSE upstream). Timeout, unexpected exit code, empty/malformed output or a missing required finding raise `FrameForgeError`; the verdict is then `error`, never `healthy`. |
 | `robotfaultlab/frameforge_profile.yaml` | baseline | FrameForge robot profile for the AUVSimBench generic vehicle (9.81 m/s², IMU 100 Hz, DVL 8 Hz). |
 | `robotfaultlab/evaluate.py` | evaluator | dev/holdout/hard case lists, sequential protocol, scoring, report. |
@@ -38,7 +38,7 @@ Interpreter: `/Library/Frameworks/Python.framework/Versions/3.12/bin/python3` (C
 python3 -m pytest tests/ -q
 python3 -m robotfaultlab demo --fault mount_z30 --profile hover      # abstains, requests surge_pulses, then resolves
 python3 -m robotfaultlab eval --split dev
-python3 -m robotfaultlab eval --split hard --verbose   # realism split, 19/24 (used to develop the drift/trim fixes; no longer blind)
+python3 -m robotfaultlab eval --split hard --verbose   # realism split, 22/24 (used to develop the drift/trim/gyro fixes; no longer blind)
 python3 -m robotfaultlab eval --split holdout --frameforge --verbose  # ~55 s; needs the frameforge binary
 python3 -m robotfaultlab frameforge --fault dropout_3s --profile surge_pulses
 ROBOTFAULTLAB_ROS2BAG=/path/to/ros2bag_convert.py python3 -m robotfaultlab bag run_0.db3   # real recording; --imu/--dvl/--pressure override topics
@@ -61,7 +61,7 @@ Thresholds in `diagnose.TH` were set by hand from the **dev** split only (20° m
 
 ## Results (2026-10-26, after the review corrections, thresholds unchanged; not independently verified)
 
-Test suite: 33 passed, 1 skipped (FrameForge binary not built) with the interpreter above and `ROBOTFAULTLAB_ROS2BAG` set (`python3 -m pytest tests/ -q`).
+Test suite: 34 passed, 1 skipped (FrameForge binary not built) with the interpreter above and `ROBOTFAULTLAB_ROS2BAG` set (`python3 -m pytest tests/ -q`).
 
 Dev split (26 cases): 26/26 top1, 0 abstentions, 0 healthy false alarms, 15 extra tests (roll/pitch mounts now request `depth_bob` when there is no vertical motion).
 
@@ -85,21 +85,22 @@ First run, thresholds frozen: **13/24** (clock drift 0/6 all abstained; gyro bia
 After the 2026-10-31 fixes (`feat/drift-and-trim-fixes`; the hard split was used to develop them, so it is **no longer a blind holdout** — dev and holdout were rerun and are unchanged at 26/26 and 54/54):
 
 ```
-split=hard  cases=24  abstentions=2  extra_tests_requested=15  healthy_false_alarms=0
+split=hard  cases=24  abstentions=5  extra_tests_requested=13  healthy_false_alarms=0
 family               n    top1    top3  abstain  extra  simple  frameforge
 healthy              6   6/6     6/6        0      4    6/6           -
 dvl_dropout          3   3/3     3/3        0      0    3/3           -
 timestamp_offset     6   6/6     6/6        0      4    0/6           -
-unknown              6   2/6     2/6        2      4    0/6           -
+unknown              6   5/6     5/6        5      2    0/6           -
 mount_rotation       3   2/3     3/3        0      3    0/3           -
 ```
-19/24. What changed:
+22/24 after the gyro check (2026-10-31). What changed:
 - **Clock drift: 0/6 → 6/6.** When the constant-lag fit cannot close the residual, the lag is refit as `lag + drift·(t − t_mid)` over a coarse drift grid (±0.25 % … ±4 %), then the lag is refined. The fitted drift is reported in the checks and the note.
 - **Trimmed vehicle: now resolved without cheating.** When the gravity-anchored fit fails, the same lag/drift is refit *without* the anchor; if that closes, the level-at-rest prior is dropped and noted. A roll/pitch rotation is then checked against the depth cross-check: confirmed if the DVL-through-`imu_q` vertical velocity disagrees with the depth rate, contradicted (vehicle trim, score ×0.3) if it agrees — but only when `depth_sensitivity()` says a mount of that axis and angle *would* have been visible with this motion; otherwise the mount is kept and the ambiguity noted. With no vertical motion, `depth_bob` is requested.
 - **Simulator fix**: the vehicle now starts at 5 m depth. AUVSimBench's default starts at the surface, where `depth = max(0, −z)` clipped during `depth_bob`, so the depth cross-check had been reading mostly clipping (healthy `depth_bob` mismatch 0.31 m/s with 0.04 m/s of real vertical motion). This did not change any dev/holdout verdict but did make the depth check usable.
 
+- **Gyro bias: 0/3 → 3/3 (abstain with reason).** `gyro_orientation_check` compares the gyro with the rate implied by consecutive `imu_q` samples; a mount rotates both streams together and a clock fault shifts both together, so only a bias leaves a steady mean difference (healthy floor ~1e-3 rad/s, gate 0.02). It is not a named hypothesis: the diagnostic abstains and the note names the bias vector. Caveat for real IMUs: if `imu_q` comes from the IMU's own gyro-integrating filter, part of the bias is absorbed into the orientation and this check under-reads it.
+
 Still failing, by design limits:
-- **Gyro bias 0/3 (healthy).** Only enters via `ω × v`; there is no gyro-integration-vs-orientation check. Invisible to this diagnostic.
 - **Sparse beam loss 2/3** (one healthy under `random_wrench`): after `validate()` drops the NaN rows the DVL is just irregularly sampled; no sample-regularity check exists.
 - **Roll mount on a trimmed vehicle 0/1 (healthy).** Without the anchor, rotation about the excited axis is unobservable; `forward_cruise`/`surge_pulses` excite only x, and no profile produces sway. A roll *trim* would likewise be reported as a roll mount when there is no sway.
 
