@@ -27,8 +27,11 @@ HYPOTHESES = ["healthy", "mount_rotation_x", "mount_rotation_y", "mount_rotation
               "timestamp_offset", "dvl_dropout"]
 ABSTAIN = "abstain"
 TH = dict(gap_s=0.5, lag_s=0.04, rot_deg=5.0, excite_mps2=0.12, excite_strong=0.5,
-          evidence_mps2=0.3, unexplained_mps2=0.2, depth_mps=0.1, close=0.2)
+          evidence_mps2=0.3, unexplained_mps2=0.2, depth_mps=0.1, close=0.2,
+          drift=0.002, depth_excite_mps=0.05)
 LAG_GRID = np.arange(-1.0, 1.0 + 1e-9, 0.01)
+# IMU clock rate error, searched only when a constant lag cannot close the residual
+DRIFT_GRID = [d * sgn for d in (0.0025, 0.005, 0.01, 0.02, 0.04) for sgn in (1, -1)]
 
 
 def family(h: str) -> str:
@@ -134,8 +137,11 @@ def imu_dvl_check(log: SensorLog) -> dict:
     t = log.dvl_t[idx]
     dvdt = (log.dvl_v[idx + 1] - log.dvl_v[idx - 1]) / (log.dvl_t[idx + 1] - log.dvl_t[idx - 1])[:, None]
 
-    def pair(lag):
-        ts = log.imu_t - lag                                  # undo a suspected IMU clock lead
+    t_mid = 0.5 * (t[0] + t[-1])
+
+    def pair(lag, drift=0.0):
+        # undo a suspected IMU clock lead, constant (lag) plus linear in time (drift about t_mid)
+        ts = log.imu_t - lag - drift * (log.imu_t - t_mid)
         ok = (t >= ts[0]) & (t <= ts[-1])
         w = _interp(ts, log.imu_gyro, t[ok])
         # ponytail: w x v uses gyro in IMU frame; exact only for small mount angles or low rates
@@ -153,33 +159,58 @@ def imu_dvl_check(log: SensorLog) -> dict:
     # Gravity anchor: one precise direction pair, weighted as half the evidence (g^2 per sample).
     anchor = (zhat, gdir, 0.5 * len(a_dvl0) * g ** 2)
 
-    def resid(a_i, a_d, R):
+    def resid(a_i, a_d, R, anchored=True):
         """Absolute m/s^2: accel residual plus gravity-anchor residual (healthy noise floor ~0.09)."""
         acc = np.mean(np.sum((a_i - a_d @ R.T) ** 2, -1))
-        anc = 0.5 * g ** 2 * np.sum((gdir - R @ zhat) ** 2)
+        anc = 0.5 * g ** 2 * np.sum((gdir - R @ zhat) ** 2) if anchored else 0.0
         return float(np.sqrt(acc + anc))
 
     R0, ang0, _ = _kabsch(a_dvl0, a_imu0, anchor)
     r00 = resid(a_imu0, a_dvl0, np.eye(3))
     rR0 = resid(a_imu0, a_dvl0, R0)
-    best = None
-    for lag in LAG_GRID:
-        a_d, a_i = pair(float(lag))
-        if len(a_d) < 10:
-            continue
-        r_lag_only = resid(a_i, a_d, np.eye(3))
-        Rl, ang, axis = _kabsch(a_d, a_i, anchor)
-        r_both = resid(a_i, a_d, Rl)
-        if best is None or r_both < best["unexplained"]:
-            best = dict(lag_s=round(float(lag), 3), rot_deg=round(ang, 2), rot_axis=axis,
-                        lag_only=r_lag_only, unexplained=r_both)
+    def search(lags, drift, best=None):
+        for lag in lags:
+            a_d, a_i = pair(float(lag), drift)
+            if len(a_d) < 10:
+                continue
+            r_lag_only = resid(a_i, a_d, np.eye(3))
+            Rl, ang, axis = _kabsch(a_d, a_i, anchor)
+            r_both = resid(a_i, a_d, Rl)
+            if best is None or r_both < best["unexplained"]:
+                best = dict(lag_s=round(float(lag), 3), drift=drift, rot_deg=round(ang, 2),
+                            rot_axis=axis, lag_only=r_lag_only, unexplained=r_both)
+        return best
+
+    best = search(LAG_GRID, 0.0)
     if best is None:
         return dict(ok=False, reason="no lag in the grid leaves enough overlapping samples")
+    if best["unexplained"] > TH["unexplained_mps2"]:
+        # ponytail: coarse (50 ms) lag grid per drift value, then refine lag at the best drift
+        for d in DRIFT_GRID:
+            best = search(LAG_GRID[::5], d, best)
+        if best["drift"]:
+            best = search(np.arange(best["lag_s"] - 0.05, best["lag_s"] + 0.05 + 1e-9, 0.01), best["drift"], best)
+    prior_violated = False
+    if best["unexplained"] > TH["unexplained_mps2"]:
+        # The level-at-rest prior (gravity anchor) may itself be wrong: a vehicle that trims at an
+        # angle. Refit at the same lag/drift without the anchor; accept only if that closes the fit.
+        # ponytail: unanchored Kabsch is degenerate under single-axis excitation (rotation about
+        # the excited axis is unobservable); the depth cross-check and a depth_bob request cover x/y.
+        a_d, a_i = pair(best["lag_s"], best["drift"])
+        Ru, angu, axu = _kabsch(a_d, a_i, None)
+        ru = resid(a_i, a_d, Ru, anchored=False)
+        if ru <= TH["unexplained_mps2"]:
+            prior_violated = True
+            best = dict(best, rot_deg=round(angu, 2), rot_axis=axu, unexplained=ru,
+                        lag_only=resid(a_i, a_d, np.eye(3), anchored=False))
+            r00, rR0 = resid(a_imu0, a_dvl0, np.eye(3), False), resid(a_imu0, a_dvl0, _kabsch(a_dvl0, a_imu0)[0], False)
     rm = lambda a, b: float(np.sqrt(max(a * a - b * b, 0.0)))   # residual removed, m/s^2; no division
-    return dict(ok=True, excitation=round(excite, 3), raw=round(r00, 3),
+    return dict(ok=True, excitation=round(excite, 3), raw=round(r00, 3), prior_violated=prior_violated,
+                tilt_deg=round(float(np.degrees(np.arccos(np.clip(gdir @ zhat, -1, 1)))), 2),
                 rot_removed=round(rm(r00, rR0), 3), rot_only_deg=round(ang0, 2),
                 lag_removed=round(rm(r00, best["lag_only"]), 3),
                 unexplained=round(best["unexplained"], 3), lag_s=best["lag_s"],
+                drift=best["drift"], lag_span_s=round(abs(best["drift"]) * (t[-1] - t[0]) / 2, 3),
                 rot_deg=best["rot_deg"], rot_axis=best["rot_axis"])
 
 
@@ -195,6 +226,19 @@ def depth_dvl_check(log: SensorLog) -> dict:
     vz = np.interp(log.depth_t[idx], log.dvl_t, vz_world)
     return dict(vertical_excitation=round(_rms(ddepth[:, None]), 3),
                 mismatch_mps=round(_rms((vz + ddepth)[:, None]), 3))
+
+
+def depth_sensitivity(log: SensorLog, axis: str, deg: float) -> float:
+    """Predicted depth-check mismatch (m/s) if a mount of (axis, deg) were real, i.e. how much the
+    DVL vertical velocity through imu_q would change.  Below TH['depth_mps'] the depth check
+    cannot see that mount with this motion (e.g. roll needs sway)."""
+    a = np.radians(deg) / 2.0
+    v = {"x": [1, 0, 0], "y": [0, 1, 0], "z": [0, 0, 1]}[axis]
+    Rm = _rot_batch(np.array([[np.cos(a), *(np.sin(a) * np.asarray(v, float))]]))[0]
+    R = _rot_batch(_interp(log.imu_t, log.imu_q, log.dvl_t))
+    vz = np.einsum("nij,nj->ni", R, log.dvl_v)[:, 2]
+    vz2 = np.einsum("nij,nj->ni", R, log.dvl_v @ Rm)[:, 2]
+    return round(_rms((vz - vz2)[:, None]), 3)
 
 
 # ---- ranking -----------------------------------------------------------------------
@@ -215,7 +259,8 @@ def diagnose(logs: list[SensorLog] | SensorLog) -> Diagnosis:
                 imu_dvl=imu_dvl_check(l), depth=depth_dvl_check(l)) for l in logs]
     gaps = max((c["gaps"] for c in per), key=lambda g: g["longest_gap_s"])
     cross = max((c["imu_dvl"] for c in per), key=lambda c: c.get("excitation", -1))
-    depth = max((c["depth"] for c in per), key=lambda c: c["mismatch_mps"])
+    i_depth = max(range(len(per)), key=lambda i: per[i]["depth"]["vertical_excitation"])
+    depth = per[i_depth]["depth"]
     checks = dict(gravity=per[0]["gravity"], gaps=gaps, imu_dvl=cross, depth=depth, n_logs=len(logs))
     notes = []
     score = {h: 0.0 for h in HYPOTHESES}
@@ -231,13 +276,34 @@ def diagnose(logs: list[SensorLog] | SensorLog) -> Diagnosis:
         nxt = "surge_pulses" if tests_done == 1 else None
         return Diagnosis([(ABSTAIN, 1.0)] + _ranked(score), checks, nxt, notes)
 
-    if abs(cross["lag_s"]) > TH["lag_s"]:
+    if cross["prior_violated"]:
+        notes.append(f"mean specific force is {cross['tilt_deg']:.1f} deg off body +Z and the gravity-anchored "
+                     "fit does not close: level-at-rest prior dropped (vehicle trim or a mount, see depth check)")
+    lag_eff = abs(cross["lag_s"]) + cross["lag_span_s"]       # constant lag plus drift excursion
+    if lag_eff > TH["lag_s"] or abs(cross["drift"]) >= TH["drift"]:
         score["timestamp_offset"] = _clip(cross["lag_removed"] / TH["evidence_mps2"]) \
-            * _clip(abs(cross["lag_s"]) / TH["lag_s"] - 0.5)
+            * _clip(lag_eff / TH["lag_s"] - 0.5)
+        if cross["drift"]:
+            notes.append(f"IMU clock rate error {cross['drift']:+.2%} fits better than a constant lag")
+    need_depth = False
     if cross["rot_deg"] > TH["rot_deg"]:
         s = _clip(cross["rot_removed"] / TH["evidence_mps2"]) * _clip(cross["rot_deg"] / TH["rot_deg"] - 0.5)
-        if cross["rot_axis"] in "xy" and depth["mismatch_mps"] > TH["depth_mps"]:
-            s = _clip(s + 0.2)     # independent confirmation from the depth cross-check
+        if cross["rot_axis"] in "xy":
+            # A roll/pitch mount corrupts imu_q, so DVL-through-attitude disagrees with depth rate.
+            # A trimmed vehicle does not: imu_q is right, only the level-at-rest prior is wrong.
+            sens = depth_sensitivity(logs[i_depth], cross["rot_axis"], cross["rot_deg"])
+            checks["depth"] = dict(depth, predicted_if_mount_mps=sens)
+            if depth["vertical_excitation"] < TH["depth_excite_mps"]:
+                need_depth = True                                  # cannot tell yet
+            elif sens < TH["depth_mps"]:
+                notes.append(f"depth cross-check cannot see a {cross['rot_axis']} rotation with this "
+                             "motion (needs sway for roll): mount vs trim unresolved, mount kept")
+            elif depth["mismatch_mps"] > TH["depth_mps"]:
+                s = _clip(s + 0.2)                                 # confirmed by depth
+            else:
+                s *= 0.3
+                notes.append("depth cross-check agrees with imu_q: apparent "
+                             f"{cross['rot_axis']} rotation is vehicle trim, not a mount")
         score["mount_rotation_" + cross["rot_axis"]] = s
     if cross["unexplained"] > TH["unexplained_mps2"]:
         notes.append(f"best lag+rotation fit leaves {cross['unexplained']:.2f} m/s^2 unexplained "
@@ -250,7 +316,10 @@ def diagnose(logs: list[SensorLog] | SensorLog) -> Diagnosis:
     next_test = None
     weak = cross["excitation"] < TH["excite_strong"]
     close = rank[0][1] - rank[1][1] < TH["close"]
-    if tests_done == 1 and (weak or close) and score["dvl_dropout"] < 0.5:
+    if tests_done == 1 and need_depth and score["mount_rotation_" + cross["rot_axis"]] > 0.3:
+        next_test = "depth_bob"
+        notes.append("roll/pitch rotation unconfirmed without vertical motion: requesting depth_bob")
+    elif tests_done == 1 and (weak or close) and score["dvl_dropout"] < 0.5:
         # next-test rule table (hand-set): low excitation -> surge; mount-vs-offset tie -> depth bob
         top2 = {family(rank[0][0]), family(rank[1][0])}
         next_test = "depth_bob" if (not weak and top2 == {"mount_rotation", "timestamp_offset"}) else "surge_pulses"
