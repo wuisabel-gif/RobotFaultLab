@@ -13,7 +13,10 @@ at family level there are only 4 known families.
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import replace
 
+from . import arm_diagnose, arm_sim
+from .arm_sim import ArmSecret
 from .diagnose import ABSTAIN, diagnose, family, simple_checks
 from .sim import Secret, generate
 
@@ -81,23 +84,66 @@ def hard_cases() -> list[Secret]:
     return out
 
 
-SPLITS = {"dev": dev_cases, "holdout": holdout_cases, "hard": hard_cases}
+def _arm(fam, prof, seed, **params):
+    return ArmSecret(fam, prof, seed, params)
+
+
+def arm_dev_cases() -> list[ArmSecret]:
+    """Used to set arm thresholds by hand.  Magnitudes: 0.1 rad, 0.1 s, 2 s."""
+    out = []
+    for prof in ("sweep", "shoulder_only"):
+        for seed in (0, 1):
+            out.append(_arm("healthy", prof, seed))
+            out += [_arm("encoder_offset", prof, seed, joint=j, offset_rad=0.1) for j in (1, 2)]
+            out.append(_arm("timestamp_offset", prof, seed, offset_s=0.1))
+            out.append(_arm("torque_dropout", prof, seed, start_s=5.0, duration_s=2.0))
+    out.append(_arm("healthy", "hold", 0))
+    out.append(_arm("encoder_offset", "hold", 0, joint=1, offset_rad=0.1))
+    return out
+
+
+def arm_holdout_cases() -> list[ArmSecret]:
+    """Held-out magnitudes AND motion profiles, plus two faults outside the hypothesis set."""
+    out = []
+    for prof in ("elbow_only", "fast_wave", "random_smooth"):
+        for seed in (10, 11):
+            out.append(_arm("healthy", prof, seed))
+        for j in (1, 2):
+            for off in (0.03, -0.2, 0.4):
+                out.append(_arm("encoder_offset", prof, 10, joint=j, offset_rad=off))
+        for s in (0.03, 0.06, 0.25):
+            out.append(_arm("timestamp_offset", prof, 10, offset_s=s))
+        for dur in (0.5, 4.0):
+            out.append(_arm("torque_dropout", prof, 10, start_s=5.0, duration_s=dur))
+        out.append(_arm("unknown", prof, 10, kind="payload", mass_kg=0.5))
+        out.append(_arm("unknown", prof, 10, kind="torque_scale", joint=1, scale=1.25))
+    return out
+
+
+SPLITS = {"dev": dev_cases, "holdout": holdout_cases, "hard": hard_cases,
+          "arm_dev": arm_dev_cases, "arm_holdout": arm_holdout_cases}
+
+# platform -> (generate, diagnose, baseline); chosen by the secret's type
+_AUV = (generate, diagnose, simple_checks)
+_ARM = (arm_sim.generate, arm_diagnose.diagnose, arm_diagnose.simple_checks)
 
 
 def run_case(secret: Secret, with_frameforge=False) -> dict:
+    generate, diagnose, simple_checks = _ARM if isinstance(secret, ArmSecret) else _AUV
     log, _ = generate(secret)
     logs = [log]
     extra = []
     diag = diagnose(logs)
     while diag.next_test and len(extra) < MAX_EXTRA:
         extra.append(diag.next_test)
-        new_log, _ = generate(Secret(secret.family, diag.next_test, secret.seed + 100, secret.params, secret.trim_nm))
+        # same hidden fault (and vehicle properties), requested motion, fresh noise
+        new_log, _ = generate(replace(secret, profile=diag.next_test, seed=secret.seed + 100))
         logs.append(new_log)
         diag = diagnose(logs)
     named = [h for h, _ in diag.ranking if h != ABSTAIN]
     res = dict(secret=secret, top1=diag.top1, top3=named[:3], abstained=diag.top1 == ABSTAIN,
                extra_tests=extra, baseline=simple_checks(log), checks=diag.checks, notes=diag.notes)
-    if with_frameforge:
+    if with_frameforge and not isinstance(secret, ArmSecret):   # FrameForge has no arm checks
         from .frameforge import frameforge_verdict
         res["frameforge"] = frameforge_verdict(log)["verdict"]
     return res
@@ -141,7 +187,8 @@ def report(split: str, results: list[dict]) -> str:
         ff = f"{f['ff']}/{f['ff_n']}" + (f" ({f['ff_err']} err)" if f["ff_err"] else "") if f["ff_n"] else "-"
         lines.append(f"{fam:18}{f['n']:>4}{f['top1']:>4}/{f['n']:<3}{f['top3']:>4}/{f['n']:<3}"
                      f"{f['abstain']:>7}  {f['extra']:>5}  {f['base']:>3}/{f['n']:<3}{ff:>10}")
-    lines.append("top1/top3: correct family at rank 1 / within top 3 of 6 named hypotheses; "
+    lines.append("top1/top3: correct family at rank 1 / within top 3 named hypotheses; "
                  "denominators include abstentions. For 'unknown' truth, abstaining is counted correct.")
-    lines.append("simple = FrameForge-equivalent gravity-axis + DVL-gap rules; frameforge = the upstream binary itself.")
+    lines.append("simple = single-rule baseline (AUV: FrameForge-equivalent gravity-axis + DVL-gap rules; arm: model-residual "
+                 "threshold + gap rule); frameforge = the upstream binary itself (AUV only).")
     return "\n".join(lines)
