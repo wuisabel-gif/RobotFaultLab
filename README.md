@@ -168,3 +168,21 @@ The arm simulator is new code written for this project, not a pinned upstream: p
 - **FrameForge adapter** runs only `gravity` and `timestamps`; `compare` would need two orientation streams the sim does not produce.
 - **Input validation is structural only.** `validate()` drops non-finite rows and rejects empty, short, mis-shaped or non-monotonic logs; it does not detect plausible-but-wrong units or clock domains.
 - Not independently verified; no git commit made.
+
+## Related projects
+
+By the same author, [wuisabel-gif](https://github.com/wuisabel-gif). The first three are used by this project.
+
+| project | what it is | used here as |
+|---|---|---|
+| [AUVSimBench](https://github.com/wuisabel-gif/AUVSimBench) | Python ROS 2 physics twin for AUV state-estimation simulation | the AUV dynamics, pinned submodule |
+| [FrameForge](https://github.com/wuisabel-gif/FrameForge) | Zig CLI that diagnoses TF tree, frame convention and localization issues in ROS robots | the "existing checks" baseline, pinned submodule |
+| [ros2bag_converter](https://github.com/wuisabel-gif/ros2bag_converter) | ROS 2 `.db3`/`.mcap` bags to CSV/JSON with no ROS install | the decoder behind `bag.py` |
+| [ThrusterHelper.jl](https://github.com/wuisabel-gif/ThrusterHelper.jl) | Julia toolkit for thruster allocation and control-authority analysis (AUVs, ROVs, spacecraft) | |
+| [FlashICP](https://github.com/wuisabel-gif/FlashICP) | CUDA-accelerated ICP for point-cloud registration | |
+| [WireDAQ](https://github.com/wuisabel-gif/WireDAQ) | data-acquisition architecture simulator: design before wiring | |
+| [PixelLink](https://github.com/wuisabel-gif/PixelLink) | ESP32 + CC1101 radio telemetry with a Python dashboard | |
+| [UnderwaterVLA](https://github.com/wuisabel-gif/UnderwaterVLA) | underwater vision-language-action work | |
+| [render](https://github.com/wuisabel-gif/render) | CPU renderer for an underwater robotics-pool scene, one Zig file | |
+
+More at [github.com/wuisabel-gif](https://github.com/wuisabel-gif?tab=repositories).
