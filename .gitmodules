@@ -1,0 +1,6 @@
+[submodule "sources/AUVSimBench"]
+	path = sources/AUVSimBench
+	url = https://github.com/wuisabel-gif/AUVSimBench
+[submodule "sources/FrameForge"]
+	path = sources/FrameForge
+	url = https://github.com/wuisabel-gif/FrameForge

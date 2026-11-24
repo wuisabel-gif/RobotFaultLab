@@ -30,6 +30,16 @@ Nothing here is hardware, control, camera, pool or firmware work.
 - **FrameForge**: invoked externally as the "existing checks" baseline. Its gravity dominant-axis rule and DVL gap rule are also re-expressed in `simple_checks()` so the baseline can be scored without the binary.
 - **New** (`diagnose.py`): `imu_dvl_check` — joint time-lag × rotation fit (Kabsch, gravity-anchored) between IMU-derived and DVL-derived body acceleration; `depth_dvl_check` — DVL vertical velocity through IMU attitude vs depth rate; the rule table, abstention gates and next-test rule.
 
+## Getting the code
+
+```bash
+git clone --recurse-submodules https://github.com/wuisabel-gif/RobotFaultLab
+```
+
+`sources/AUVSimBench` (Apache-2.0) and `sources/FrameForge` are git submodules pinned to commits `7003e8d` and `31a3fb0`. They are pointers to the upstream repositories, not copies: no upstream code is redistributed here. FrameForge has no license file upstream, so it is only ever built and invoked from its own checkout. In an existing clone run `git submodule update --init`.
+
+RobotFaultLab itself is licensed under Apache-2.0 (see `LICENSE`).
+
 ## Run
 
 Interpreter: `/Library/Frameworks/Python.framework/Versions/3.12/bin/python3` (CPython 3.12.4, numpy 2.1.3, pytest 9.1.0), which is also what `python3` on PATH resolves to here via `/usr/local/bin/python3`. Homebrew and `/usr/bin/python3` lack numpy. Nothing was installed.
