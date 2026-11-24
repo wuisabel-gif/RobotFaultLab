@@ -1,7 +1,7 @@
 """Adapter that runs the UNMODIFIED upstream FrameForge binary on exported CSVs.
 
-FrameForge has no LICENSE file, so nothing from it is copied; it is invoked
-as an external executable.  Binary lookup order:
+Nothing from FrameForge (Apache-2.0, pinned as a submodule) is copied; it is
+invoked as an external executable.  Binary lookup order:
   $ROBOTFAULTLAB_FRAMEFORGE, /tmp/robotfaultlab-frameforge/bin/frameforge,
   sources/FrameForge/zig-out/bin/frameforge.
 

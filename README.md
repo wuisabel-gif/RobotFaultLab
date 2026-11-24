@@ -24,7 +24,7 @@ firmware code.
 | `robotfaultlab/types.py` | neutral | `SensorLog` dataclass, `validate()` (drops non-finite rows, rejects empty/short/mis-shaped/non-monotonic input). Imports only numpy. |
 | `robotfaultlab/sim.py` | evaluator | motion profiles + fault injection on top of **AUVSimBench's `dynamics.py`** (imported from `sources/AUVSimBench`, Apache-2.0, unmodified). Returns `SensorLog` (sensor-only) and `Secret` (truth) as separate objects. |
 | `robotfaultlab/diagnose.py` | diagnostic | takes `SensorLog`(s) only. Five checks + hand-set rule table → ranking, abstention, next test. Imports `types.py` only; a fresh-process test asserts that importing it loads neither `sim`, `evaluate` nor `auv_sim_bench`. |
-| `robotfaultlab/frameforge.py` | baseline | exports CSVs and runs the **unmodified upstream FrameForge binary** (`gravity`, `timestamps`). Nothing from FrameForge is copied (no LICENSE at the pinned commit). Timeout, unexpected exit code, empty/malformed output or a missing required finding raise `FrameForgeError`; the verdict is then `error`, never `healthy`. |
+| `robotfaultlab/frameforge.py` | baseline | exports CSVs and runs the **unmodified upstream FrameForge binary** (`gravity`, `timestamps`). Nothing from FrameForge is copied; it is built and invoked from its own checkout. Timeout, unexpected exit code, empty/malformed output or a missing required finding raise `FrameForgeError`; the verdict is then `error`, never `healthy`. |
 | `robotfaultlab/frameforge_profile.yaml` | baseline | FrameForge robot profile for the AUVSimBench generic vehicle (9.81 m/s², IMU 100 Hz, DVL 8 Hz). |
 | `robotfaultlab/evaluate.py` | evaluator | dev/holdout/hard case lists, sequential protocol, scoring, report. |
 | `robotfaultlab/bag.py` | loader | rosbag2 (`.db3`/`.mcap`) → `SensorLog`. Decoding is delegated to **ros2bag_convert.py** (Apache-2.0, stdlib-only, [wuisabel-gif/ros2bag_converter](https://github.com/wuisabel-gif/ros2bag_converter)) run as a subprocess via `$ROBOTFAULTLAB_ROS2BAG`; nothing is vendored. Reads `sensor_msgs/Imu`, `nav_msgs/Odometry` (twist = DVL body velocity) and `sensor_msgs/FluidPressure` (depth = (p − atm)/(ρg)), header stamps first, bag receive time as fallback. Imports `types.py` only. |
@@ -49,7 +49,7 @@ firmware code.
 git clone --recurse-submodules https://github.com/wuisabel-gif/RobotFaultLab
 ```
 
-`sources/AUVSimBench` (Apache-2.0) and `sources/FrameForge` are git submodules pinned to commits `7003e8d` and `31a3fb0`. They are pointers to the upstream repositories, not copies: no upstream code is redistributed here. At the pinned commit FrameForge has no license file, so it is only ever built and invoked from its own checkout. In an existing clone run `git submodule update --init`.
+`sources/AUVSimBench` and `sources/FrameForge` (both Apache-2.0) are git submodules pinned to commits `7003e8d` and `cefa391`. They are pointers to the upstream repositories, not copies: no upstream code is redistributed here. FrameForge is Apache-2.0 as of the pinned commit (the only change since `31a3fb0`, the commit the results were produced with, is the added LICENSE and a README section); it is still built and invoked from its own checkout rather than copied. In an existing clone run `git submodule update --init`.
 
 RobotFaultLab itself is licensed under Apache-2.0 (see `LICENSE`).
 
@@ -168,3 +168,21 @@ The arm simulator is new code written for this project, not a pinned upstream: p
 - **FrameForge adapter** runs only `gravity` and `timestamps`; `compare` would need two orientation streams the sim does not produce.
 - **Input validation is structural only.** `validate()` drops non-finite rows and rejects empty, short, mis-shaped or non-monotonic logs; it does not detect plausible-but-wrong units or clock domains.
 - Not independently verified; no git commit made.
+
+## Related projects
+
+By the same author, [wuisabel-gif](https://github.com/wuisabel-gif). The first three are used by this project.
+
+| project | what it is | used here as |
+|---|---|---|
+| [AUVSimBench](https://github.com/wuisabel-gif/AUVSimBench) | Python ROS 2 physics twin for AUV state-estimation simulation | the AUV dynamics, pinned submodule |
+| [FrameForge](https://github.com/wuisabel-gif/FrameForge) | Zig CLI that diagnoses TF tree, frame convention and localization issues in ROS robots | the "existing checks" baseline, pinned submodule |
+| [ros2bag_converter](https://github.com/wuisabel-gif/ros2bag_converter) | ROS 2 `.db3`/`.mcap` bags to CSV/JSON with no ROS install | the decoder behind `bag.py` |
+| [ThrusterHelper.jl](https://github.com/wuisabel-gif/ThrusterHelper.jl) | Julia toolkit for thruster allocation and control-authority analysis (AUVs, ROVs, spacecraft) | |
+| [FlashICP](https://github.com/wuisabel-gif/FlashICP) | CUDA-accelerated ICP for point-cloud registration | |
+| [WireDAQ](https://github.com/wuisabel-gif/WireDAQ) | data-acquisition architecture simulator: design before wiring | |
+| [PixelLink](https://github.com/wuisabel-gif/PixelLink) | ESP32 + CC1101 radio telemetry with a Python dashboard | |
+| [UnderwaterVLA](https://github.com/wuisabel-gif/UnderwaterVLA) | underwater vision-language-action work | |
+| [render](https://github.com/wuisabel-gif/render) | CPU renderer for an underwater robotics-pool scene, one Zig file | |
+
+More at [github.com/wuisabel-gif](https://github.com/wuisabel-gif?tab=repositories).
