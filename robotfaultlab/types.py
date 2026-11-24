@@ -29,26 +29,26 @@ MIN_IMU, MIN_DVL, MIN_DEPTH = 50, 10, 5
 _SHAPES = dict(imu_t=1, imu_acc=3, imu_gyro=3, imu_q=4, dvl_t=1, dvl_v=3, depth_t=1, depth=1)
 
 
-def validate(log: SensorLog) -> SensorLog:
-    """Return a copy with non-finite samples dropped; raise InvalidSensorLog if what is
-    left is too short, mis-shaped, or has non-increasing time stamps."""
-    if not isinstance(log, SensorLog):
-        raise InvalidSensorLog(f"expected SensorLog, got {type(log).__name__}")
+def validate_streams(log, cls, shapes, groups) -> dict:
+    """Generic stream validation for any log dataclass.  shapes: field -> 1 (1-D) or column
+    count; groups: (time_field, value_fields, min_samples).  Returns cleaned float arrays with
+    non-finite rows dropped; raises InvalidSensorLog on anything unusable."""
+    if not isinstance(log, cls):
+        raise InvalidSensorLog(f"expected {cls.__name__}, got {type(log).__name__}")
     arr = {}
-    for f in fields(SensorLog):
+    for f in fields(cls):
         try:
             a = np.asarray(getattr(log, f.name), dtype=float)
         except (TypeError, ValueError) as e:
             raise InvalidSensorLog(f"{f.name}: not numeric ({e})") from None
-        want = _SHAPES[f.name]
+        want = shapes[f.name]
         if want == 1:
             if a.ndim != 1:
                 raise InvalidSensorLog(f"{f.name}: expected 1-D, got shape {a.shape}")
         elif a.ndim != 2 or a.shape[1] != want:
             raise InvalidSensorLog(f"{f.name}: expected (N,{want}), got shape {a.shape}")
         arr[f.name] = a
-
-    def clean(t_key, keys, n_min):
+    for t_key, keys, n_min in groups:
         n = len(arr[t_key])
         if any(len(arr[k]) != n for k in keys):
             raise InvalidSensorLog(f"{t_key}: row count mismatch")
@@ -61,10 +61,16 @@ def validate(log: SensorLog) -> SensorLog:
             arr[k] = arr[k][ok]
         if np.any(np.diff(arr[t_key]) <= 0):
             raise InvalidSensorLog(f"{t_key}: time stamps must be strictly increasing")
+    return arr
 
-    clean("imu_t", ("imu_acc", "imu_gyro", "imu_q"), MIN_IMU)
-    clean("dvl_t", ("dvl_v",), MIN_DVL)
-    clean("depth_t", ("depth",), MIN_DEPTH)
+
+def validate(log: SensorLog) -> SensorLog:
+    """Return a copy with non-finite samples dropped; raise InvalidSensorLog if what is
+    left is too short, mis-shaped, or has non-increasing time stamps."""
+    arr = validate_streams(log, SensorLog, _SHAPES, [
+        ("imu_t", ("imu_acc", "imu_gyro", "imu_q"), MIN_IMU),
+        ("dvl_t", ("dvl_v",), MIN_DVL),
+        ("depth_t", ("depth",), MIN_DEPTH)])
     qn = np.linalg.norm(arr["imu_q"], axis=1)
     if np.any(qn < 1e-6):
         raise InvalidSensorLog("imu_q: zero-norm quaternion")

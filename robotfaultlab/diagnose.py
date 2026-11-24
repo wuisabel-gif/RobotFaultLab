@@ -17,6 +17,7 @@ Thresholds in TH were set by hand looking at the dev split only
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -35,7 +36,8 @@ DRIFT_GRID = [d * sgn for d in (0.0025, 0.005, 0.01, 0.02, 0.04) for sgn in (1, 
 
 
 def family(h: str) -> str:
-    return "mount_rotation" if h.startswith("mount_rotation") else h
+    """Hypothesis -> fault family: drops a trailing axis (_x/_y/_z) or joint (_j1, _j2, ...)."""
+    return re.sub(r"_(?:[xyz]|j\d+)$", "", h)
 
 
 @dataclass

@@ -1,13 +1,15 @@
 """CLI:  python3 -m robotfaultlab demo [--fault F] [--profile P]
         python3 -m robotfaultlab eval [--split dev|holdout] [--frameforge] [--verbose]
         python3 -m robotfaultlab frameforge [--fault F]
+        python3 -m robotfaultlab arm [--fault F] [--profile P]
         python3 -m robotfaultlab bag BAG.db3|BAG.mcap [--imu T] [--dvl T] [--pressure T]"""
 from __future__ import annotations
 
 import argparse
 import json
 
-from . import evaluate
+from . import arm_sim, evaluate
+from .arm_sim import ArmSecret
 from .bag import TOPICS, load
 from .diagnose import diagnose, simple_checks
 from .sim import PROFILES, Secret, generate
@@ -21,6 +23,15 @@ FAULTS = {
     "unknown_dvl_scale": lambda p: Secret("unknown", p, 0, dict(kind="dvl_scale", scale=1.3)),
 }
 
+ARM_FAULTS = {
+    "healthy": lambda p: ArmSecret("healthy", p, 0),
+    "enc_j1_0.1": lambda p: ArmSecret("encoder_offset", p, 0, dict(joint=1, offset_rad=0.1)),
+    "enc_j2_0.1": lambda p: ArmSecret("encoder_offset", p, 0, dict(joint=2, offset_rad=0.1)),
+    "offset_0.1": lambda p: ArmSecret("timestamp_offset", p, 0, dict(offset_s=0.1)),
+    "dropout_2s": lambda p: ArmSecret("torque_dropout", p, 0, dict(start_s=5.0, duration_s=2.0)),
+    "unknown_payload": lambda p: ArmSecret("unknown", p, 0, dict(kind="payload", mass_kg=0.5)),
+}
+
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="robotfaultlab")
@@ -28,6 +39,9 @@ def main(argv=None):
     d = sub.add_parser("demo")
     d.add_argument("--fault", choices=FAULTS, default="mount_x30")
     d.add_argument("--profile", choices=PROFILES, default="hover")
+    r = sub.add_parser("arm", help="robot-arm demo (encoders + joint torques)")
+    r.add_argument("--fault", choices=ARM_FAULTS, default="enc_j2_0.1")
+    r.add_argument("--profile", choices=arm_sim.PROFILES, default="hold")
     e = sub.add_parser("eval")
     e.add_argument("--split", choices=evaluate.SPLITS, default="holdout")
     e.add_argument("--frameforge", action="store_true", help="also run the upstream binary baseline")
@@ -41,8 +55,8 @@ def main(argv=None):
         b.add_argument(f"--{k}", default=v)
     a = ap.parse_args(argv)
 
-    if a.cmd == "demo":
-        secret = FAULTS[a.fault](a.profile)
+    if a.cmd in ("demo", "arm"):
+        secret = (FAULTS if a.cmd == "demo" else ARM_FAULTS)[a.fault](a.profile)
         res = evaluate.run_case(secret)
         print(f"[evaluator secret, NOT given to diagnostic] {secret}")
         print(f"diagnostic saw {1 + len(res['extra_tests'])} log(s); extra tests requested: {res['extra_tests']}")
