@@ -2,7 +2,7 @@
 
 Nothing from FrameForge (Apache-2.0, pinned as a submodule) is copied; it is
 invoked as an external executable.  Binary lookup order:
-  $ROBOTFAULTLAB_FRAMEFORGE, /tmp/robotfaultlab-frameforge/bin/frameforge,
+  $ROBOTICS_TOOLS_FRAMEFORGE, /tmp/robotics_tools-frameforge/bin/frameforge,
   sources/FrameForge/zig-out/bin/frameforge.
 
 Failure policy: any timeout, unexpected exit code, unparseable output, or a
@@ -39,7 +39,7 @@ class FrameForgeError(RuntimeError):
 
 
 def binary() -> str | None:
-    for c in (os.environ.get("ROBOTFAULTLAB_FRAMEFORGE"), "/tmp/robotfaultlab-frameforge/bin/frameforge",
+    for c in (os.environ.get("ROBOTICS_TOOLS_FRAMEFORGE"), "/tmp/robotics_tools-frameforge/bin/frameforge",
               _ROOT / "sources" / "FrameForge" / "zig-out" / "bin" / "frameforge"):
         if c and Path(c).is_file() and os.access(c, os.X_OK):
             return str(c)

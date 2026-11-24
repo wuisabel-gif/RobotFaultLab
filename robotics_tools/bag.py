@@ -2,7 +2,7 @@
 
 Decoding is delegated to ros2bag_convert.py (Apache-2.0, stdlib-only, from
 https://github.com/wuisabel-gif/ros2bag_converter), run as a subprocess and found
-via $ROBOTFAULTLAB_ROS2BAG.  Its JSON export is a list of
+via $ROBOTICS_TOOLS_ROS2BAG.  Its JSON export is a list of
 {timestamp, topic, type, data} records; from_records() turns those into a SensorLog.
 
 Expected topics (AUVSimBench sim_node defaults):
@@ -27,9 +27,9 @@ TIMEOUT_S = 120
 
 
 def converter() -> str:
-    exe = os.environ.get("ROBOTFAULTLAB_ROS2BAG", "")
+    exe = os.environ.get("ROBOTICS_TOOLS_ROS2BAG", "")
     if not exe or not os.path.exists(exe):
-        raise FileNotFoundError("set ROBOTFAULTLAB_ROS2BAG to ros2bag_convert.py")
+        raise FileNotFoundError("set ROBOTICS_TOOLS_ROS2BAG to ros2bag_convert.py")
     return exe
 
 

@@ -1,7 +1,7 @@
-# RobotFaultLab
+# robotics-tools
 
-Which sensor fault does this robot have, from its logs alone? RobotFaultLab
-cross-checks sensor streams against each other, ranks the fault hypotheses,
+Which sensor fault does this robot have, from its logs alone? `robotics-tools`
+(formerly RobotFaultLab) cross-checks sensor streams against each other, ranks the fault hypotheses,
 **abstains** when the data fits none of them, and **names the next motion test
 to run** when the evidence is weak. Evaluation is blinded: fault labels and
 magnitudes live only in the evaluator, and the boundary is enforced by tests.
@@ -21,19 +21,19 @@ firmware code.
 
 | file | side | role |
 |---|---|---|
-| `robotfaultlab/types.py` | neutral | `SensorLog` dataclass, `validate()` (drops non-finite rows, rejects empty/short/mis-shaped/non-monotonic input). Imports only numpy. |
-| `robotfaultlab/sim.py` | evaluator | motion profiles + fault injection on top of **AUVSimBench's `dynamics.py`** (imported from `sources/AUVSimBench`, Apache-2.0, unmodified). Returns `SensorLog` (sensor-only) and `Secret` (truth) as separate objects. |
-| `robotfaultlab/diagnose.py` | diagnostic | takes `SensorLog`(s) only. Five checks + hand-set rule table → ranking, abstention, next test. Imports `types.py` only; a fresh-process test asserts that importing it loads neither `sim`, `evaluate` nor `auv_sim_bench`. |
-| `robotfaultlab/frameforge.py` | baseline | exports CSVs and runs the **unmodified upstream FrameForge binary** (`gravity`, `timestamps`). Nothing from FrameForge is copied; it is built and invoked from its own checkout. Timeout, unexpected exit code, empty/malformed output or a missing required finding raise `FrameForgeError`; the verdict is then `error`, never `healthy`. |
-| `robotfaultlab/frameforge_profile.yaml` | baseline | FrameForge robot profile for the AUVSimBench generic vehicle (9.81 m/s², IMU 100 Hz, DVL 8 Hz). |
-| `robotfaultlab/evaluate.py` | evaluator | dev/holdout/hard case lists, sequential protocol, scoring, report. |
-| `robotfaultlab/bag.py` | loader | rosbag2 (`.db3`/`.mcap`) → `SensorLog`. Decoding is delegated to **ros2bag_convert.py** (Apache-2.0, stdlib-only, [wuisabel-gif/ros2bag_converter](https://github.com/wuisabel-gif/ros2bag_converter)) run as a subprocess via `$ROBOTFAULTLAB_ROS2BAG`; nothing is vendored. Reads `sensor_msgs/Imu`, `nav_msgs/Odometry` (twist = DVL body velocity) and `sensor_msgs/FluidPressure` (depth = (p − atm)/(ρg)), header stamps first, bag receive time as fallback. Imports `types.py` only. |
-| `robotfaultlab/arm_types.py` | neutral | `ArmLog` (encoders + joint torques), nominal `ArmModel` (URDF-like public parameters), `inverse_dynamics()`, `validate()`. Imports only `types.py`. |
-| `robotfaultlab/arm_sim.py` | evaluator | new, deliberately small planar 2R arm: analytic joint trajectories, torques from inverse dynamics of the true arm, fault injection. Returns `ArmLog` and `ArmSecret` separately. |
-| `robotfaultlab/arm_diagnose.py` | diagnostic | takes `ArmLog`(s) only. Torque gap check + joint lag × encoder-offset fit → ranking, abstention, next test. Covered by the same fresh-process import-boundary test. |
-| `robotfaultlab/__main__.py` | CLI | `demo`, `arm`, `eval`, `frameforge`, `bag`. |
-| `tests/test_robotfaultlab.py` | | ranking on dev cases, determinism, sequential protocol, score denominators, real-binary adapter test (skipped if no binary). |
-| `tests/test_bag.py` | | hand-encoded CDR `.db3` bag round-trips through the converter into a `SensorLog` that diagnoses identically to the simulator original; missing topic / layout / converter / non-bag errors. The two converter-backed tests skip without `$ROBOTFAULTLAB_ROS2BAG`. |
+| `robotics_tools/types.py` | neutral | `SensorLog` dataclass, `validate()` (drops non-finite rows, rejects empty/short/mis-shaped/non-monotonic input). Imports only numpy. |
+| `robotics_tools/sim.py` | evaluator | motion profiles + fault injection on top of **AUVSimBench's `dynamics.py`** (imported from `sources/AUVSimBench`, Apache-2.0, unmodified). Returns `SensorLog` (sensor-only) and `Secret` (truth) as separate objects. |
+| `robotics_tools/diagnose.py` | diagnostic | takes `SensorLog`(s) only. Five checks + hand-set rule table → ranking, abstention, next test. Imports `types.py` only; a fresh-process test asserts that importing it loads neither `sim`, `evaluate` nor `auv_sim_bench`. |
+| `robotics_tools/frameforge.py` | baseline | exports CSVs and runs the **unmodified upstream FrameForge binary** (`gravity`, `timestamps`). Nothing from FrameForge is copied; it is built and invoked from its own checkout. Timeout, unexpected exit code, empty/malformed output or a missing required finding raise `FrameForgeError`; the verdict is then `error`, never `healthy`. |
+| `robotics_tools/frameforge_profile.yaml` | baseline | FrameForge robot profile for the AUVSimBench generic vehicle (9.81 m/s², IMU 100 Hz, DVL 8 Hz). |
+| `robotics_tools/evaluate.py` | evaluator | dev/holdout/hard case lists, sequential protocol, scoring, report. |
+| `robotics_tools/bag.py` | loader | rosbag2 (`.db3`/`.mcap`) → `SensorLog`. Decoding is delegated to **ros2bag_convert.py** (Apache-2.0, stdlib-only, [wuisabel-gif/ros2bag_converter](https://github.com/wuisabel-gif/ros2bag_converter)) run as a subprocess via `$ROBOTICS_TOOLS_ROS2BAG`; nothing is vendored. Reads `sensor_msgs/Imu`, `nav_msgs/Odometry` (twist = DVL body velocity) and `sensor_msgs/FluidPressure` (depth = (p − atm)/(ρg)), header stamps first, bag receive time as fallback. Imports `types.py` only. |
+| `robotics_tools/arm_types.py` | neutral | `ArmLog` (encoders + joint torques), nominal `ArmModel` (URDF-like public parameters), `inverse_dynamics()`, `validate()`. Imports only `types.py`. |
+| `robotics_tools/arm_sim.py` | evaluator | new, deliberately small planar 2R arm: analytic joint trajectories, torques from inverse dynamics of the true arm, fault injection. Returns `ArmLog` and `ArmSecret` separately. |
+| `robotics_tools/arm_diagnose.py` | diagnostic | takes `ArmLog`(s) only. Torque gap check + joint lag × encoder-offset fit → ranking, abstention, next test. Covered by the same fresh-process import-boundary test. |
+| `robotics_tools/__main__.py` | CLI | `demo`, `arm`, `eval`, `frameforge`, `bag`. |
+| `tests/test_auv.py` | | ranking on dev cases, determinism, sequential protocol, score denominators, real-binary adapter test (skipped if no binary). |
+| `tests/test_bag.py` | | hand-encoded CDR `.db3` bag round-trips through the converter into a `SensorLog` that diagnoses identically to the simulator original; missing topic / layout / converter / non-bag errors. The two converter-backed tests skip without `$ROBOTICS_TOOLS_ROS2BAG`. |
 | `tests/test_arm.py` | | arm inverse dynamics against hand-computed gravity moments, dev ranking with recovered offset and lag, static-pose abstain-then-resolve, invalid input, dev split scores. |
 | `.github/workflows/tests.yml` | CI | Python 3.12, numpy 2.1.3, pytest 9.1.0; fetches `ros2bag_convert.py` at a pinned commit, runs `pytest tests`. The FrameForge real-binary test skips in CI (no Zig). |
 | `tests/test_boundary.py` | | subprocess `sys.modules` boundary, relabeling invariance, non-finite/empty/short/mis-shaped/zero-signal inputs, adapter failure modes via fake executables. |
@@ -46,12 +46,12 @@ firmware code.
 ## Getting the code
 
 ```bash
-git clone --recurse-submodules https://github.com/wuisabel-gif/RobotFaultLab
+git clone --recurse-submodules https://github.com/wuisabel-gif/robotics-tools
 ```
 
 `sources/AUVSimBench` and `sources/FrameForge` (both Apache-2.0) are git submodules pinned to commits `7003e8d` and `cefa391`. They are pointers to the upstream repositories, not copies: no upstream code is redistributed here. FrameForge is Apache-2.0 as of the pinned commit (the only change since `31a3fb0`, the commit the results were produced with, is the added LICENSE and a README section); it is still built and invoked from its own checkout rather than copied. In an existing clone run `git submodule update --init`.
 
-RobotFaultLab itself is licensed under Apache-2.0 (see `LICENSE`).
+robotics-tools itself is licensed under Apache-2.0 (see `LICENSE`).
 
 ## Run
 
@@ -59,21 +59,21 @@ Requirements: Python 3.12 with numpy and pytest (developed with numpy 2.1.3, pyt
 
 ```bash
 python3 -m pytest tests/ -q
-python3 -m robotfaultlab demo --fault mount_z30 --profile hover      # abstains, requests surge_pulses, then resolves
-python3 -m robotfaultlab arm --fault enc_j2_0.1 --profile hold        # static arm: abstains, requests sweep, then resolves
-python3 -m robotfaultlab eval --split dev
-python3 -m robotfaultlab eval --split arm_holdout --verbose
-python3 -m robotfaultlab eval --split hard --verbose   # realism split, 22/24 (used to develop the drift/trim/gyro fixes; no longer blind)
-python3 -m robotfaultlab eval --split holdout --frameforge --verbose  # ~55 s; needs the frameforge binary
-python3 -m robotfaultlab frameforge --fault dropout_3s --profile surge_pulses
-ROBOTFAULTLAB_ROS2BAG=/path/to/ros2bag_convert.py python3 -m robotfaultlab bag run_0.db3   # real recording; --imu/--dvl/--pressure override topics
+python3 -m robotics_tools demo --fault mount_z30 --profile hover      # abstains, requests surge_pulses, then resolves
+python3 -m robotics_tools arm --fault enc_j2_0.1 --profile hold        # static arm: abstains, requests sweep, then resolves
+python3 -m robotics_tools eval --split dev
+python3 -m robotics_tools eval --split arm_holdout --verbose
+python3 -m robotics_tools eval --split hard --verbose   # realism split, 22/24 (used to develop the drift/trim/gyro fixes; no longer blind)
+python3 -m robotics_tools eval --split holdout --frameforge --verbose  # ~55 s; needs the frameforge binary
+python3 -m robotics_tools frameforge --fault dropout_3s --profile surge_pulses
+ROBOTICS_TOOLS_ROS2BAG=/path/to/ros2bag_convert.py python3 -m robotics_tools bag run_0.db3   # real recording; --imu/--dvl/--pressure override topics
 ```
 
-FrameForge binary lookup: `$ROBOTFAULTLAB_FRAMEFORGE`, then `/tmp/robotfaultlab-frameforge/bin/frameforge`, then `sources/FrameForge/zig-out/bin/frameforge`. The real-binary test is skipped if none exists; the fake-executable failure tests always run. To build the binary without touching the upstream tree, point every Zig cache outside it:
+FrameForge binary lookup: `$ROBOTICS_TOOLS_FRAMEFORGE`, then `/tmp/robotics_tools-frameforge/bin/frameforge`, then `sources/FrameForge/zig-out/bin/frameforge`. The real-binary test is skipped if none exists; the fake-executable failure tests always run. To build the binary without touching the upstream tree, point every Zig cache outside it:
 
 ```bash
 cd sources/FrameForge && zig build --prefix /path/out --cache-dir /path/cache --global-cache-dir /path/global
-export ROBOTFAULTLAB_FRAMEFORGE=/path/out/bin/frameforge
+export ROBOTICS_TOOLS_FRAMEFORGE=/path/out/bin/frameforge
 ```
 
 ## Protocol and blinding
@@ -88,7 +88,7 @@ Thresholds in `diagnose.TH` were set by hand from the **dev** split only (20° m
 
 ## Results (not independently verified)
 
-Test suite: 48 passed, 1 skipped (FrameForge binary not built) with `ROBOTFAULTLAB_ROS2BAG` set (`python3 -m pytest tests/ -q`).
+Test suite: 48 passed, 1 skipped (FrameForge binary not built) with `ROBOTICS_TOOLS_ROS2BAG` set (`python3 -m pytest tests/ -q`).
 
 ### AUV
 

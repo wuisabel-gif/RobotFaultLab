@@ -1,8 +1,8 @@
-"""CLI:  python3 -m robotfaultlab demo [--fault F] [--profile P]
-        python3 -m robotfaultlab eval [--split dev|holdout] [--frameforge] [--verbose]
-        python3 -m robotfaultlab frameforge [--fault F]
-        python3 -m robotfaultlab arm [--fault F] [--profile P]
-        python3 -m robotfaultlab bag BAG.db3|BAG.mcap [--imu T] [--dvl T] [--pressure T]"""
+"""CLI:  python3 -m robotics_tools demo [--fault F] [--profile P]
+        python3 -m robotics_tools eval [--split dev|holdout] [--frameforge] [--verbose]
+        python3 -m robotics_tools frameforge [--fault F]
+        python3 -m robotics_tools arm [--fault F] [--profile P]
+        python3 -m robotics_tools bag BAG.db3|BAG.mcap [--imu T] [--dvl T] [--pressure T]"""
 from __future__ import annotations
 
 import argparse
@@ -34,7 +34,7 @@ ARM_FAULTS = {
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(prog="robotfaultlab")
+    ap = argparse.ArgumentParser(prog="robotics_tools")
     sub = ap.add_subparsers(dest="cmd", required=True)
     d = sub.add_parser("demo")
     d.add_argument("--fault", choices=FAULTS, default="mount_x30")
@@ -49,7 +49,7 @@ def main(argv=None):
     f = sub.add_parser("frameforge")
     f.add_argument("--fault", choices=FAULTS, default="mount_x30")
     f.add_argument("--profile", choices=PROFILES, default="hover")
-    b = sub.add_parser("bag", help="diagnose a rosbag2 recording (needs $ROBOTFAULTLAB_ROS2BAG)")
+    b = sub.add_parser("bag", help="diagnose a rosbag2 recording (needs $ROBOTICS_TOOLS_ROS2BAG)")
     b.add_argument("path")
     for k, v in TOPICS.items():
         b.add_argument(f"--{k}", default=v)
