@@ -12,10 +12,10 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from robotfaultlab import frameforge  # noqa: E402
-from robotfaultlab.diagnose import diagnose, simple_checks  # noqa: E402
-from robotfaultlab.sim import Secret, generate  # noqa: E402
-from robotfaultlab.types import InvalidSensorLog, SensorLog, validate  # noqa: E402
+from robotics_tools import frameforge  # noqa: E402
+from robotics_tools.diagnose import diagnose, simple_checks  # noqa: E402
+from robotics_tools.sim import Secret, generate  # noqa: E402
+from robotics_tools.types import InvalidSensorLog, SensorLog, validate  # noqa: E402
 
 
 def _log(fam, prof="surge_pulses", seed=0, **params):
@@ -23,12 +23,12 @@ def _log(fam, prof="surge_pulses", seed=0, **params):
 
 
 # ---- process-level import boundary -------------------------------------------------
-@pytest.mark.parametrize("module", ["robotfaultlab.types", "robotfaultlab.diagnose", "robotfaultlab.frameforge", "robotfaultlab.bag",
-                                    "robotfaultlab.arm_types", "robotfaultlab.arm_diagnose"])
+@pytest.mark.parametrize("module", ["robotics_tools.types", "robotics_tools.diagnose", "robotics_tools.frameforge", "robotics_tools.bag",
+                                    "robotics_tools.arm_types", "robotics_tools.arm_diagnose"])
 def test_diagnostic_side_imports_no_simulator_or_evaluator(module):
     code = (
         "import sys, importlib; sys.path.insert(0, %r); importlib.import_module(%r); "
-        "bad = sorted(m for m in sys.modules if m.startswith(('robotfaultlab.sim', 'robotfaultlab.arm_sim', 'robotfaultlab.evaluate', 'auv_sim_bench'))); "
+        "bad = sorted(m for m in sys.modules if m.startswith(('robotics_tools.sim', 'robotics_tools.arm_sim', 'robotics_tools.evaluate', 'auv_sim_bench'))); "
         "print(bad)" % (str(ROOT), module)
     )
     out = subprocess.run([sys.executable, "-I", "-c", code], cwd=ROOT, capture_output=True, text=True, timeout=60)
@@ -156,7 +156,7 @@ def test_verdict_maps_fake_findings(tmp_path):
 
 
 def test_missing_binary_is_an_error(monkeypatch):
-    monkeypatch.setenv("ROBOTFAULTLAB_FRAMEFORGE", "/nonexistent/frameforge")
+    monkeypatch.setenv("ROBOTICS_TOOLS_FRAMEFORGE", "/nonexistent/frameforge")
     monkeypatch.setattr(frameforge, "binary", lambda: None)
     with pytest.raises(frameforge.FrameForgeError, match="not found"):
         frameforge.run(["gravity", "x.csv"])

@@ -13,12 +13,12 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from robotfaultlab import bag  # noqa: E402
-from robotfaultlab.diagnose import diagnose  # noqa: E402
-from robotfaultlab.sim import Secret, generate  # noqa: E402
-from robotfaultlab.types import InvalidSensorLog  # noqa: E402
+from robotics_tools import bag  # noqa: E402
+from robotics_tools.diagnose import diagnose  # noqa: E402
+from robotics_tools.sim import Secret, generate  # noqa: E402
+from robotics_tools.types import InvalidSensorLog  # noqa: E402
 
-CONVERTER = os.environ.get("ROBOTFAULTLAB_ROS2BAG", "")
+CONVERTER = os.environ.get("ROBOTICS_TOOLS_ROS2BAG", "")
 
 
 # ---- minimal CDR writer (little-endian, 4-byte encapsulation header) ------------------
@@ -140,12 +140,12 @@ def test_from_records_errors():
 
 
 def test_missing_converter(monkeypatch, tmp_path):
-    monkeypatch.delenv("ROBOTFAULTLAB_ROS2BAG", raising=False)
+    monkeypatch.delenv("ROBOTICS_TOOLS_ROS2BAG", raising=False)
     with pytest.raises(FileNotFoundError):
         bag.load(str(tmp_path / "x.db3"))
 
 
-@pytest.mark.skipif(not CONVERTER, reason="set ROBOTFAULTLAB_ROS2BAG to ros2bag_convert.py")
+@pytest.mark.skipif(not CONVERTER, reason="set ROBOTICS_TOOLS_ROS2BAG to ros2bag_convert.py")
 def test_db3_round_trip(tmp_path):
     log, _ = generate(SECRET)
     path = tmp_path / "run_0.db3"
@@ -155,7 +155,7 @@ def test_db3_round_trip(tmp_path):
     assert diagnose(loaded).ranking == diagnose(log).ranking
 
 
-@pytest.mark.skipif(not CONVERTER, reason="set ROBOTFAULTLAB_ROS2BAG to ros2bag_convert.py")
+@pytest.mark.skipif(not CONVERTER, reason="set ROBOTICS_TOOLS_ROS2BAG to ros2bag_convert.py")
 def test_db3_not_a_bag(tmp_path):
     p = tmp_path / "junk.db3"
     p.write_bytes(b"not sqlite")

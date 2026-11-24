@@ -9,11 +9,11 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from robotfaultlab import evaluate  # noqa: E402
-from robotfaultlab.arm_diagnose import ABSTAIN, diagnose, simple_checks  # noqa: E402
-from robotfaultlab.arm_sim import ArmSecret, generate  # noqa: E402
-from robotfaultlab.arm_types import NOMINAL, ArmLog, InvalidSensorLog, inverse_dynamics  # noqa: E402
-from robotfaultlab.diagnose import family  # noqa: E402
+from robotics_tools import evaluate  # noqa: E402
+from robotics_tools.arm_diagnose import ABSTAIN, diagnose, simple_checks  # noqa: E402
+from robotics_tools.arm_sim import ArmSecret, generate  # noqa: E402
+from robotics_tools.arm_types import NOMINAL, ArmLog, InvalidSensorLog, inverse_dynamics  # noqa: E402
+from robotics_tools.diagnose import family  # noqa: E402
 
 
 def _log(fam, prof="sweep", seed=0, **params):

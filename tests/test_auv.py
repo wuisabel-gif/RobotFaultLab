@@ -10,10 +10,10 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from robotfaultlab import evaluate, frameforge  # noqa: E402
-from robotfaultlab.diagnose import ABSTAIN, diagnose, family, simple_checks  # noqa: E402
-from robotfaultlab.sim import Secret, generate  # noqa: E402
-from robotfaultlab.types import SensorLog  # noqa: E402
+from robotics_tools import evaluate, frameforge  # noqa: E402
+from robotics_tools.diagnose import ABSTAIN, diagnose, family, simple_checks  # noqa: E402
+from robotics_tools.sim import Secret, generate  # noqa: E402
+from robotics_tools.types import SensorLog  # noqa: E402
 
 
 def _log(fam, prof="surge_pulses", **params):
@@ -31,11 +31,11 @@ def test_generation_is_deterministic():
 def test_sensor_log_carries_no_secrets():
     names = {f.name for f in fields(SensorLog)}
     assert not names & {"family", "label", "params", "truth", "secret", "profile"}
-    src = (ROOT / "robotfaultlab" / "diagnose.py").read_text()
+    src = (ROOT / "robotics_tools" / "diagnose.py").read_text()
     tree = ast.parse(src)
     modules = {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
     names = {a.name for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) for a in n.names}
-    assert not modules & {"robotfaultlab.evaluate", "evaluate"} and "Secret" not in names
+    assert not modules & {"robotics_tools.evaluate", "evaluate"} and "Secret" not in names
     assert "Secret" not in {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
 
 
@@ -87,7 +87,7 @@ def test_frameforge_adapter_runs_upstream_binary():
 
 
 def test_hard_split_injections():
-    from robotfaultlab.types import validate
+    from robotics_tools.types import validate
     base, _ = generate(Secret("healthy", "yaw_sweep", 20))
     nan_log, _ = generate(Secret("dvl_dropout", "yaw_sweep", 20, dict(start_s=8.0, duration_s=3.0, nan=True)))
     assert len(nan_log.dvl_t) == len(base.dvl_t) and np.isnan(nan_log.dvl_v).any()
@@ -119,7 +119,7 @@ def test_clock_drift_and_trim_resolved():
 
 
 def test_gyro_bias_abstains_with_reason():
-    from robotfaultlab.diagnose import gyro_orientation_check
+    from robotics_tools.diagnose import gyro_orientation_check
     healthy, _ = generate(Secret("healthy", "yaw_sweep", 20))
     assert gyro_orientation_check(healthy)["bias_norm_rps"] < 0.005
     mounted, _ = generate(Secret("mount_rotation", "yaw_sweep", 20, dict(axis="z", angle_deg=35.0)))

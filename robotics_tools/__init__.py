@@ -1,4 +1,4 @@
-"""RobotFaultLab: cross-check fault disambiguation on simulated AUV sensor logs.
+"""robotics-tools: cross-check sensor-fault diagnosis for robots (AUV and robot arm), simulation only.
 
 Layout (the blinding boundary is the module boundary):
   sim.py       generates SensorLog (sensor-only) + Secret (truth)  -- evaluator side

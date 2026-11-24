@@ -16,5 +16,5 @@ jobs:
           mkdir -p "$RUNNER_TEMP/ros2bag"
           curl -fsSL -o "$RUNNER_TEMP/ros2bag/ros2bag_convert.py" \
             https://raw.githubusercontent.com/wuisabel-gif/ros2bag_converter/77beec688e6e82e4db657fc1ca76c41689eba58d/skills/ros2bag-converter/scripts/ros2bag_convert.py
-          echo "ROBOTFAULTLAB_ROS2BAG=$RUNNER_TEMP/ros2bag/ros2bag_convert.py" >> "$GITHUB_ENV"
+          echo "ROBOTICS_TOOLS_ROS2BAG=$RUNNER_TEMP/ros2bag/ros2bag_convert.py" >> "$GITHUB_ENV"
       - run: python -m pytest tests -q
