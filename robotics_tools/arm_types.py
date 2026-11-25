@@ -56,6 +56,29 @@ def inverse_dynamics(m: ArmModel, q, qd, qdd) -> np.ndarray:
     return np.stack([t1, t2], -1)
 
 
+# Test catalogue: named joint motions an operator can be asked to run.  Per joint:
+# (centre_rad, [(amplitude_rad, omega_rad_s, phase_rad), ...]).  Public test procedures.
+TEST_DURATION_S = 12.0
+TESTS = {
+    "sweep":         [(0.5, [(0.6, 0.8, 0.0)]), (-0.7, [(0.8, 1.3, 0.5)])],
+    "shoulder_only": [(0.3, [(0.7, 1.0, 0.0)]), (-0.5, [])],
+    "elbow_only":    [(0.4, []), (-0.6, [(0.9, 1.2, 0.0)])],
+    "fast_wave":     [(0.2, [(0.4, 2.5, 0.0)]), (0.3, [(0.5, 3.1, 1.0)])],
+}
+
+
+def trajectory(spec, t):
+    """q, qd, qdd (N,2) of a sum-of-sines joint motion at times t."""
+    q, qd, qdd = (np.zeros((len(t), 2)) for _ in range(3))
+    for j, (centre, terms) in enumerate(spec):
+        q[:, j] = centre
+        for a, w, ph in terms:
+            q[:, j] += a * np.sin(w * t + ph)
+            qd[:, j] += a * w * np.cos(w * t + ph)
+            qdd[:, j] -= a * w * w * np.sin(w * t + ph)
+    return q, qd, qdd
+
+
 def validate(log: ArmLog) -> ArmLog:
     """Copy with non-finite rows dropped; InvalidSensorLog if too short, mis-shaped or
     non-monotonic."""

@@ -127,3 +127,27 @@ def test_gyro_bias_abstains_with_reason():
     d = diagnose(generate(Secret("unknown", "yaw_sweep", 20, dict(kind="gyro_bias", bias_rps=0.05)))[0])
     assert d.top1 == ABSTAIN and any("gyro bias" in n for n in d.notes)
     assert abs(d.checks["gyro"]["bias_rps"][0] - 0.05) < 0.005
+
+
+def test_intermittent_beam_loss_abstains_but_one_outage_does_not():
+    from robotics_tools.diagnose import dvl_gap_check
+    from robotics_tools.types import validate
+    loss, _ = generate(Secret("unknown", "random_wrench", 20, dict(kind="dvl_beam_loss", frac=0.3)))
+    assert dvl_gap_check(validate(loss))["irregular_frac"] > 0.1
+    d = diagnose(loss)
+    assert d.top1 == ABSTAIN and any("intermittent" in n for n in d.notes)
+    gap, _ = generate(Secret("dvl_dropout", "random_wrench", 20, dict(start_s=8.0, duration_s=3.0)))
+    assert dvl_gap_check(validate(gap))["irregular_frac"] < 0.05 and diagnose(gap).top1 == "dvl_dropout"
+
+
+def test_choose_test_follows_the_physics():
+    from robotics_tools.diagnose import choose_test, predicted_evidence
+    # roll couples sway into apparent vertical velocity; surge cannot show a roll mount
+    assert choose_test([("mount_rotation_x", "healthy")], {})[0] == "sway_pulses"
+    assert predicted_evidence("surge_pulses", "mount_rotation_x", {})[6] < 0.01
+    assert choose_test([("mount_rotation_y", "timestamp_offset")], {})[0] == "surge_pulses"
+
+
+def test_roll_mount_on_trimmed_vehicle_needs_sway():
+    r = evaluate.run_case(Secret("mount_rotation", "forward_cruise", 20, dict(axis="x", angle_deg=20.0), 0.9))
+    assert "sway_pulses" in r["extra_tests"] and r["top1"] == "mount_rotation_x"
