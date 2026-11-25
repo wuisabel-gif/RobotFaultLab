@@ -31,6 +31,7 @@ firmware code.
 | `robotics_tools/arm_types.py` | neutral | `ArmLog` (encoders + joint torques), nominal `ArmModel` (URDF-like public parameters), `inverse_dynamics()`, `validate()`. Imports only `types.py`. |
 | `robotics_tools/arm_sim.py` | evaluator | new, deliberately small planar 2R arm: analytic joint trajectories, torques from inverse dynamics of the true arm, fault injection. Returns `ArmLog` and `ArmSecret` separately. |
 | `robotics_tools/arm_diagnose.py` | diagnostic | takes `ArmLog`(s) only. Torque gap check + joint lag × encoder-offset fit → ranking, abstention, next test. Covered by the same fresh-process import-boundary test. |
+| `pyproject.toml` | packaging | `pip install .`, console command `robotics-tools`; numpy is the only runtime dependency. |
 | `robotics_tools/__main__.py` | CLI | `demo`, `arm`, `eval`, `frameforge`, `bag`. |
 | `tests/test_auv.py` | | ranking on dev cases, determinism, sequential protocol, score denominators, real-binary adapter test (skipped if no binary). |
 | `tests/test_bag.py` | | hand-encoded CDR `.db3` bag round-trips through the converter into a `SensorLog` that diagnoses identically to the simulator original; missing topic / layout / converter / non-bag errors. The two converter-backed tests skip without `$ROBOTICS_TOOLS_ROS2BAG`. |
@@ -55,15 +56,19 @@ robotics-tools itself is licensed under Apache-2.0 (see `LICENSE`).
 
 ## Run
 
-Requirements: Python 3.12 with numpy and pytest (developed with numpy 2.1.3, pytest 9.1.0). No other dependencies.
+Requirements: Python ≥ 3.10 with numpy, and pytest for the tests (developed on 3.12 with numpy 2.1.3, pytest 9.1.0).
+
+`pip install .` also works and adds a `robotics-tools` command. An installed copy has the diagnostics, the arm platform and the bag loader; AUV simulation additionally needs AUVSimBench, found through the submodule when run from a clone or through `ROBOTICS_TOOLS_AUVSIMBENCH=/path/to/AUVSimBench` otherwise.
 
 ```bash
 python3 -m pytest tests/ -q
 python3 -m robotics_tools demo --fault mount_z30 --profile hover      # abstains, requests surge_pulses, then resolves
-python3 -m robotics_tools arm --fault enc_j2_0.1 --profile hold        # static arm: abstains, requests sweep, then resolves
+python3 -m robotics_tools arm --fault enc_j2_0.1 --profile hold        # static arm: abstains, requests the best-separating test, then resolves
 python3 -m robotics_tools eval --split dev
 python3 -m robotics_tools eval --split arm_holdout --verbose
-python3 -m robotics_tools eval --split hard --verbose   # realism split, 22/24 (used to develop the drift/trim/gyro fixes; no longer blind)
+python3 -m robotics_tools eval --split hard --verbose   # realism split, 24/24 but used for development (not blind)
+python3 -m robotics_tools eval --split blind --verbose  # second realism split, run once: 29/39
+python3 -m robotics_tools eval --split arm_hard --verbose  # arm with friction / backlash, run once: 15/30
 python3 -m robotics_tools eval --split holdout --frameforge --verbose  # ~55 s; needs the frameforge binary
 python3 -m robotics_tools frameforge --fault dropout_3s --profile surge_pulses
 ROBOTICS_TOOLS_ROS2BAG=/path/to/ros2bag_convert.py python3 -m robotics_tools bag run_0.db3   # real recording; --imu/--dvl/--pressure override topics
@@ -79,7 +84,7 @@ export ROBOTICS_TOOLS_FRAMEFORGE=/path/out/bin/frameforge
 ## Protocol and blinding
 1. Evaluator builds a `Secret` (family, profile, seed, params) and calls `generate()` → `SensorLog` with only `imu_t, imu_acc, imu_gyro, imu_q, dvl_t, dvl_v, depth_t, depth`.
 2. `diagnose([log])` returns a ranking over 6 named hypotheses (`healthy, mount_rotation_{x,y,z}, timestamp_offset, dvl_dropout`), possibly headed by `abstain`, and an optional `next_test`.
-3. If `next_test` is set, the evaluator regenerates the **same hidden fault** under that motion profile (new seed) and calls `diagnose(all_logs)`; at most 2 extra tests.
+3. `next_test` is chosen by `choose_test()`: for each test in a public catalogue the diagnostic predicts the evidence each candidate hypothesis would produce and requests the test with the largest separation between the leading candidates (or between all pairs when nothing is conclusive yet). If `next_test` is set, the evaluator regenerates the **same hidden fault** under that motion profile (new seed) and calls `diagnose(all_logs)`; at most 2 extra tests.
 4. Scoring is at family level (`mount_rotation_*` → `mount_rotation`). Denominators are all cases of a family **including abstentions**. Abstaining on a known fault counts as wrong; abstaining on `unknown` truth counts as correct. top3 is over the 6 named hypotheses, not over 3 candidates; at family level only 4 known families exist, so top3 is weak evidence and top1 is the number that matters.
 
 The arm platform runs the identical loop with `ArmSecret` → `ArmLog` (`enc_t, enc_q, tau_t, tau`), 5 named hypotheses (`healthy, encoder_offset_j{1,2}, timestamp_offset, torque_dropout`) and joint-level names collapsed to `encoder_offset` for scoring.
@@ -88,24 +93,24 @@ Thresholds in `diagnose.TH` were set by hand from the **dev** split only (20° m
 
 ## Results (not independently verified)
 
-Test suite: 48 passed, 1 skipped (FrameForge binary not built) with `ROBOTICS_TOOLS_ROS2BAG` set (`python3 -m pytest tests/ -q`).
+Test suite: 53 passed, 1 skipped (FrameForge binary not built) with `ROBOTICS_TOOLS_ROS2BAG` set (`python3 -m pytest tests/ -q`).
 
 ### AUV
 
-Dev split (26 cases): 26/26 top1, 0 abstentions, 0 healthy false alarms, 15 extra tests (roll/pitch mounts now request `depth_bob` when there is no vertical motion).
+Dev split (26 cases): 26/26 top1, 0 abstentions, 0 healthy false alarms, 13 extra tests.
 
 Holdout split — held-out magnitudes (8°/35°/60°, 0.06/0.12/0.5 s, 1 s/6 s), held-out profiles (`yaw_sweep`, `depth_bob`, `random_wrench`), and two fault kinds outside the hypothesis set (DVL scale ×1.3, accelerometer x-bias 0.6 m/s²):
 
 ```
-split=holdout  cases=54  abstentions=6  extra_tests_requested=31  healthy_false_alarms=0
+split=holdout  cases=54  abstentions=6  extra_tests_requested=32  healthy_false_alarms=0
 family               n    top1    top3  abstain  extra  simple  frameforge
-healthy              6   6/6     6/6        0      4    6/6         6/6
-mount_rotation      27  27/27   27/27       0     19    6/27        6/27
-timestamp_offset     9   9/9     9/9        0      6    0/9         0/9
-dvl_dropout          6   6/6     6/6        0      0    6/6         6/6
-unknown              6   6/6     6/6        6      2    0/6         0/6
+healthy              6   6/6     6/6        0      4    6/6           -
+mount_rotation      27  27/27   27/27       0     20    6/27          -
+timestamp_offset     9   9/9     9/9        0      6    0/9           -
+dvl_dropout          6   6/6     6/6        0      0    6/6           -
+unknown              6   6/6     6/6        6      2    0/6           -
 ```
-`simple` = FrameForge-equivalent gravity-axis + DVL-gap rules; `frameforge` = the upstream binary on exported CSVs. Both catch dropouts and only the 60° roll/pitch mounts (gravity leaves the z-axis dominant below 45°); neither can see yaw mounts, timestamp offsets, or abstain. The cross-check resolves all of them here, with 0.57 extra tests per case on average.
+`simple` = FrameForge-equivalent gravity-axis + DVL-gap rules; `frameforge` = the upstream binary on exported CSVs. Both catch dropouts and only the 60° roll/pitch mounts (gravity leaves the z-axis dominant below 45°); neither can see yaw mounts, timestamp offsets, or abstain. The cross-check resolves all of them here, with 0.59 extra tests per case on average. (The holdout has been rerun after each later change to the diagnostic and has stayed at 54/54; it was blind only for the first run.)
 
 Hard split (2026-10-30) — sensor realism the thresholds were never tuned on: a vehicle that holds an ~18° pitch trim (`trim_nm=0.9`, a vehicle property that persists across requested extra tests; violates the level-at-rest prior), DVL beam loss as NaN velocities instead of missing messages, IMU clock *rate drift* (0.5 % and 2 %) instead of a fixed offset, gyro x-bias 0.05 rad/s, and sparse random DVL NaNs (30 %).
 
@@ -114,24 +119,42 @@ First run, thresholds frozen: **13/24** (clock drift 0/6 all abstained; gyro bia
 After the 2026-10-31 fixes (`feat/drift-and-trim-fixes`; the hard split was used to develop them, so it is **no longer a blind holdout** — dev and holdout were rerun and are unchanged at 26/26 and 54/54):
 
 ```
-split=hard  cases=24  abstentions=5  extra_tests_requested=13  healthy_false_alarms=0
+split=hard  cases=24  abstentions=6  extra_tests_requested=11  healthy_false_alarms=0
 family               n    top1    top3  abstain  extra  simple  frameforge
 healthy              6   6/6     6/6        0      4    6/6           -
 dvl_dropout          3   3/3     3/3        0      0    3/3           -
 timestamp_offset     6   6/6     6/6        0      4    0/6           -
-unknown              6   5/6     5/6        5      2    0/6           -
-mount_rotation       3   2/3     3/3        0      3    0/3           -
+unknown              6   6/6     6/6        6      0    0/6           -
+mount_rotation       3   3/3     3/3        0      3    0/3           -
 ```
-22/24 after the gyro check (2026-10-31). What changed:
+24/24 after the gyro check (2026-10-31) and the regularity check and computed test choice (2026-11-24). What changed:
 - **Clock drift: 0/6 → 6/6.** When the constant-lag fit cannot close the residual, the lag is refit as `lag + drift·(t − t_mid)` over a coarse drift grid (±0.25 % … ±4 %), then the lag is refined. The fitted drift is reported in the checks and the note.
-- **Trimmed vehicle: now resolved without cheating.** When the gravity-anchored fit fails, the same lag/drift is refit *without* the anchor; if that closes, the level-at-rest prior is dropped and noted. A roll/pitch rotation is then checked against the depth cross-check: confirmed if the DVL-through-`imu_q` vertical velocity disagrees with the depth rate, contradicted (vehicle trim, score ×0.3) if it agrees — but only when `depth_sensitivity()` says a mount of that axis and angle *would* have been visible with this motion; otherwise the mount is kept and the ambiguity noted. With no vertical motion, `depth_bob` is requested.
+- **Trimmed vehicle: now resolved without cheating.** When the gravity-anchored fit fails, the same lag/drift is refit *without* the anchor; if that closes, the level-at-rest prior is dropped and noted. A roll/pitch rotation is then checked against the depth cross-check: confirmed if the DVL-through-`imu_q` vertical velocity disagrees with the depth rate, contradicted (vehicle trim, score ×0.3) if it agrees — but only when `depth_sensitivity()` says a mount of that axis and angle *would* have been visible with this motion; otherwise the mount is kept and the ambiguity noted. When the motion so far could not have shown such a mount, the test that would show it is requested.
 - **Simulator fix**: the vehicle now starts at 5 m depth. AUVSimBench's default starts at the surface, where `depth = max(0, −z)` clipped during `depth_bob`, so the depth cross-check had been reading mostly clipping (healthy `depth_bob` mismatch 0.31 m/s with 0.04 m/s of real vertical motion). This did not change any dev/holdout verdict but did make the depth check usable.
 
 - **Gyro bias: 0/3 → 3/3 (abstain with reason).** `gyro_orientation_check` compares the gyro with the rate implied by consecutive `imu_q` samples; a mount rotates both streams together and a clock fault shifts both together, so only a bias leaves a steady mean difference (healthy floor ~1e-3 rad/s, gate 0.02). It is not a named hypothesis: the diagnostic abstains and the note names the bias vector. Caveat for real IMUs: if `imu_q` comes from the IMU's own gyro-integrating filter, part of the bias is absorbed into the orientation and this check under-reads it.
 
-Still failing, by design limits:
-- **Sparse beam loss 2/3** (one healthy under `random_wrench`): after `validate()` drops the NaN rows the DVL is just irregularly sampled; no sample-regularity check exists.
-- **Roll mount on a trimmed vehicle 0/1 (healthy).** Without the anchor, rotation about the excited axis is unobservable; `forward_cruise`/`surge_pulses` excite only x, and no profile produces sway. A roll *trim* would likewise be reported as a roll mount when there is no sway.
+- **Sparse beam loss: 2/3 → 3/3 (abstain with reason).** `dvl_gap_check` now reports the share of DVL intervals that skipped a ping; one clean outage gives ~1 %, intermittent loss tens of percent, and above 10 % the diagnostic abstains and says so.
+- **Roll mount on a trimmed vehicle: 0/1 → 1/1.** The next test is now computed (see Protocol). A roll mount only shows in the depth cross-check under sway, so `sway_pulses` is requested and confirms it.
+
+A 24/24 on a split that was used to find these fixes says little. The honest measure is the next split.
+
+Blind split (2026-11-24, written after the above and **run once with everything frozen**): new seeds and magnitudes, 12° and 40° mounts, a −3 % clock drift, a 0.1 s offset combined with +1 % drift, a 1.5 s NaN dropout, gyro bias 0.03 rad/s, beam loss at 15 % and 45 %, tripled sensor noise on a healthy vehicle, and a milder pitch trim under `yaw_sweep`:
+
+```
+split=blind  cases=39  abstentions=15  extra_tests_requested=19  healthy_false_alarms=0
+family               n    top1    top3  abstain  extra  simple  frameforge
+healthy              9   6/9     6/9        3      4    9/9           -
+mount_rotation      12   9/12   12/12       0     11    1/12          -
+timestamp_offset     6   3/6     3/6        3      4    0/6           -
+dvl_dropout          3   2/3     3/3        0      0    3/3           -
+unknown              9   9/9     9/9        9      0    0/9           -
+```
+**29/39**, 0 healthy false alarms. All 9 out-of-set faults abstained with the right reason. The 10 misses:
+- **Healthy vehicle with 3× sensor noise: 0/3, abstained.** The fit leaves 0.28 m/s² unexplained against a 0.2 gate that was set for 1× noise. No false alarm, but a noisier healthy vehicle is not recognised as healthy. The gate has to scale with measured noise instead of being a constant.
+- **Clock drift of −3 %: 0/3, abstained.** The drift grid has 2 % and 4 % and nothing between; neither closes the residual. The mixed offset + 1 % drift cases were 3/3. A continuous drift fit is the fix.
+- **12° mounts on a trimmed vehicle under `yaw_sweep`: 0/3, called healthy.** With the gravity anchor dropped, the trim and the mount merge into one fitted rotation; the depth cross-check then agrees with `imu_q` closely enough (0.075 m/s against a 0.1 gate) that the whole rotation is written off as trim. The same mounts were 6/6 on level vehicles and the 40° mount on the trimmed vehicle was caught. Small mounts on a trimmed vehicle are a real blind spot.
+- **NaN dropout on the trimmed vehicle: called `mount_rotation_y`** (dropout in the top 3). Same root cause: the trim is read as a pitch mount and outranks the gap evidence.
 
 **Read these numbers in context**: the simulator is clean. Noise is small white Gaussian (accel 0.05 m/s², gyro 0.005 rad/s, DVL 0.01 m/s, depth 0.01 m), there are no biases, scale errors, drift, or latency on the healthy sensors, the vehicle self-rights so "level at rest" holds, and faults are injected one at a time. 100% on 54 cases is a statement about this regime, not about real logs.
 
@@ -156,18 +179,35 @@ The 5 misses, all reported healthy:
 
 The arm simulator is new code written for this project, not a pinned upstream: planar 2R rigid links, viscous friction, white noise, prescribed trajectories. It has no joint flexibility, backlash, Coulomb friction, gear ripple or controller, so the 0.07 N m healthy floor is far cleaner than any real arm.
 
+Arm realism split (2026-11-24, **run once**, nothing retuned): the dev faults again, on an arm with 0.2 N m of Coulomb friction that the nominal model does not contain, or with 0.01 rad of gear backlash on the encoders. Both are arm properties and persist through requested extra tests.
+
+```
+split=arm_hard  cases=30  abstentions=15  extra_tests_requested=1  healthy_false_alarms=0
+family               n    top1    top3  abstain  extra  simple  frameforge
+healthy              6   3/6     3/6        3      0    3/6           -
+encoder_offset      12   6/12    6/12       6      0    9/12          -
+timestamp_offset     6   3/6     3/6        3      1    0/6           -
+torque_dropout       6   3/6     3/6        3      0    6/6           -
+```
+**15/30**, 0 healthy false alarms. The split divides cleanly:
+- **Backlash 0.01 rad: 15/15.** It adds a small offset that flips sign with direction; the fit absorbs it and every fault was still named.
+- **Coulomb friction 0.2 N m: 0/15, all abstained**, including healthy and both dropouts. Friction that reverses with joint direction cannot be explained by a lag or a constant offset, so 0.2 N m stays unexplained against a 0.12 gate. Abstaining is the designed behaviour for an arm that does not match its model, and nothing was mis-named, but it means the diagnostic is unusable on any arm with unmodelled friction until friction is identified and added to the model. A dropout is also swallowed by the abstention, although the gap evidence does not depend on the model; it should be reported regardless.
+
+The arm holdout was rerun after the next-test choice became computed and is unchanged (40/45, same five misses).
+
 ## Limitations and deferred items
-- **Realism holdout is partial.** The hard split covers trim, NaN beam loss, clock drift, gyro bias and sparse NaNs, and shows where the frozen thresholds and the fixed-lag model break (see Results). Still untested: realistic coloured noise, multi-fault cases, accelerometer scale error, DVL bottom-lock loss with altitude. Expect the `unexplained_mps2` gate (0.2 m/s², healthy floor ≈0.09) to need re-tuning with realistic noise.
-- **"Level at rest" prior.** The rotation fit is anchored on mean specific force ≈ body +Z (FrameForge's gravity-check assumption). Since the drift/trim fixes the anchor is dropped when it cannot close the fit, and the depth cross-check arbitrates mount vs trim where it is sensitive: pitch under forward/vertical motion, roll only under sway. A roll trim without sway is still reported as a roll mount.
+- **No real recording has been processed.** Every number here is from simulation. The bag loader exists and is tested on a synthetic bag; running a real log with a deliberately injected fault is the single most valuable missing result, and needs a recording.
+- **Known failures from the blind runs** (see Results): constant residual gates do not scale with sensor noise; the clock-drift grid is coarse; small mounts on a trimmed vehicle are written off as trim; unmodelled Coulomb friction makes the arm diagnostic abstain on everything. None of these were patched after the blind runs. Multi-fault cases and coloured noise remain untested.
+- **"Level at rest" prior.** The rotation fit is anchored on mean specific force ≈ body +Z (FrameForge's gravity-check assumption). Since the drift/trim fixes the anchor is dropped when it cannot close the fit, and the depth cross-check arbitrates mount vs trim where it is sensitive: pitch under forward/vertical motion, roll only under sway. When the motion cannot show it, the diagnostic now requests the test that can (`sway_pulses` for roll).
 - **Gyro term approximation.** The DVL-side acceleration uses `ω × v` with the gyro in the IMU frame (`# ponytail:` in `diagnose.py`); exact only for small mount angles or low angular rates. It did not hurt at 60° under `yaw_sweep` here, but is a known ceiling.
-- **Next-test selection is a two-row rule table**, not an information-gain computation: low excitation → `surge_pulses`; mount-vs-offset tie → `depth_bob`. Both extra profiles are fixed; the diagnostic cannot design its own.
+- **Next-test choice is computed, but from a small catalogue.** The diagnostic predicts the evidence each hypothesis would produce under each catalogue test and requests the one that separates the candidates best. The AUV catalogue has three tests with excitation figures measured once on the dev vehicle (`diagnose.TESTS`); the arm catalogue has four trajectories and predicts torques from the nominal model. It is a separation heuristic, not a Bayesian expected-information computation, it cannot design a new motion, and at most two extra tests are requested.
 - **Lag grid** is ±1 s at 10 ms steps; drift grid ±0.25 % … ±4 % (searched only when a constant lag fails, on a 50 ms lag grid, then refined). Offsets or drifts outside those are untested. Sign convention: positive = IMU clock ahead.
 - **Unknown faults**: only two kinds, both abstained; a fault that happens to be well explained by lag+rotation (e.g. a small accelerometer bias → apparent 3° tilt) would be classified, not abstained.
 - **Arm platform is a planar two-link idealisation.** Six- or seven-joint arms, the lag × offset fit in higher dimensions, identifying which of many joints is offset, and real friction are all untested. The diagnostic needs the nominal model (masses, lengths); a wrong model looks like an unknown fault and is abstained on, which is safe but unhelpful. Family-level scoring would count a wrong-joint answer as correct; none occurred, but the table does not show that by itself.
 - **Bag loader is AUV-only and untested on real recordings**: `bag.py` has only been exercised on a synthetic `.db3` written from simulator output. Real logs will need their topic names passed on the command line, may carry a non-identity IMU-to-body transform the loader does not apply, and the thresholds were never run on real sensor noise.
 - **FrameForge adapter** runs only `gravity` and `timestamps`; `compare` would need two orientation streams the sim does not produce.
 - **Input validation is structural only.** `validate()` drops non-finite rows and rejects empty, short, mis-shaped or non-monotonic logs; it does not detect plausible-but-wrong units or clock domains.
-- Not independently verified; no git commit made.
+- Not independently verified.
 
 ## Related projects
 

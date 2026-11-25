@@ -29,7 +29,7 @@ HYPOTHESES = ["healthy", "mount_rotation_x", "mount_rotation_y", "mount_rotation
 ABSTAIN = "abstain"
 TH = dict(gap_s=0.5, lag_s=0.04, rot_deg=5.0, excite_mps2=0.12, excite_strong=0.5,
           evidence_mps2=0.3, unexplained_mps2=0.2, depth_mps=0.1, close=0.2,
-          drift=0.002, depth_excite_mps=0.05, gyro_bias_rps=0.02)
+          drift=0.002, depth_excite_mps=0.05, gyro_bias_rps=0.02, irregular_frac=0.1)
 LAG_GRID = np.arange(-1.0, 1.0 + 1e-9, 0.01)
 # IMU clock rate error, searched only when a constant lag cannot close the residual
 DRIFT_GRID = [d * sgn for d in (0.0025, 0.005, 0.01, 0.02, 0.04) for sgn in (1, -1)]
@@ -140,7 +140,10 @@ def dvl_gap_check(log: SensorLog) -> dict:
     nominal = float(np.median(dts))
     gaps = dts[dts > 3 * nominal]
     return dict(nominal_dt=round(nominal, 4), n_gaps=int(len(gaps)),
-                longest_gap_s=round(float(gaps.max()) if len(gaps) else 0.0, 3))
+                longest_gap_s=round(float(gaps.max()) if len(gaps) else 0.0, 3),
+                # share of intervals that skipped at least one ping: ~0 for one clean outage,
+                # large for intermittent loss (missing or non-finite pings scattered through the log)
+                irregular_frac=round(float(np.mean(dts > 1.5 * nominal)), 3))
 
 
 def imu_dvl_check(log: SensorLog) -> dict:
@@ -264,6 +267,53 @@ def depth_sensitivity(log: SensorLog, axis: str, deg: float) -> float:
     return round(_rms((vz - vz2)[:, None]), 3)
 
 
+# ---- next-test choice --------------------------------------------------------------
+# Test catalogue: nominal excitation of each motion test on a healthy vehicle (rms over the run;
+# body acceleration m/s^2, jerk m/s^3, body velocity m/s), measured once on the dev vehicle.
+# This is public test-procedure knowledge, like a datasheet, not evaluator truth.
+TESTS = {
+    "surge_pulses": dict(acc=[1.05, 0.02, 0.03], jerk=[2.94, 0.13, 0.16], v=[0.65, 0.01, 0.01]),
+    "sway_pulses":  dict(acc=[0.06, 0.68, 0.03], jerk=[0.21, 2.33, 0.16], v=[0.33, 0.38, 0.01]),
+    "depth_bob":    dict(acc=[0.09, 0.02, 0.24], jerk=[0.24, 0.13, 0.31], v=[0.44, 0.01, 0.30]),
+}
+NOMINAL_MAG = dict(rot_deg=20.0, lag_s=0.2)        # used when a hypothesis has no fitted magnitude
+
+
+def _axis_rot(axis, deg):
+    a = np.radians(deg) / 2.0
+    v = {"x": [1, 0, 0], "y": [0, 1, 0], "z": [0, 0, 1]}[axis]
+    return _rot_batch(np.array([[np.cos(a), *(np.sin(a) * np.asarray(v, float))]]))[0]
+
+
+def predicted_evidence(test: str, hyp: str, mag: dict) -> np.ndarray:
+    """Evidence a hypothesis would produce under a catalogue test, as 7 channels:
+    rotation residual per axis (m/s^2), lag residual per axis (m/s^2), depth mismatch (m/s).
+    Rotation and lag are separate channels because their residuals have different time shapes."""
+    T = {k: np.asarray(v) for k, v in TESTS[test].items()}
+    out = np.zeros(7)
+    if hyp.startswith("mount_rotation"):
+        ax, deg = hyp[-1], mag.get("rot_deg") or NOMINAL_MAG["rot_deg"]
+        out[:3] = np.sqrt(((_axis_rot(ax, deg) - np.eye(3)) ** 2) @ T["acc"] ** 2)
+        # roll couples sway into apparent vertical velocity, pitch couples surge; yaw nothing
+        out[6] = abs(np.sin(np.radians(deg))) * {"x": T["v"][1], "y": T["v"][0], "z": 0.0}[ax]
+    elif hyp == "timestamp_offset":
+        out[3:6] = (mag.get("lag_s") or NOMINAL_MAG["lag_s"]) * T["jerk"]
+    return out                                      # healthy / dvl_dropout: motion-independent
+
+
+def choose_test(pairs, mag) -> tuple[str, float]:
+    """Catalogue test that best separates the given hypothesis pairs: the largest mean distance
+    between their predicted evidence.  Returns (test, separation)."""
+    sep = {t: float(np.mean([np.linalg.norm(predicted_evidence(t, a, mag) - predicted_evidence(t, b, mag))
+                             for a, b in pairs])) for t in TESTS}
+    best = max(sep, key=sep.get)
+    return best, sep[best]
+
+
+_MOTION_HYPS = ["healthy", "mount_rotation_x", "mount_rotation_y", "mount_rotation_z", "timestamp_offset"]
+_ALL_PAIRS = [(a, b) for i, a in enumerate(_MOTION_HYPS) for b in _MOTION_HYPS[i + 1:]]
+
+
 # ---- ranking -----------------------------------------------------------------------
 def _clip(x):
     return float(np.clip(x, 0.0, 1.0))
@@ -296,12 +346,19 @@ def diagnose(logs: list[SensorLog] | SensorLog) -> Diagnosis:
         notes.append(f"gyro disagrees with imu_q by a steady {gyro['bias_norm_rps']:.3f} rad/s "
                      f"(axes {gyro['bias_rps']}): gyro bias, outside the hypothesis set")
         return Diagnosis([(ABSTAIN, 1.0)] + _ranked(score), checks, None, notes)
+    if gaps["irregular_frac"] > TH["irregular_frac"]:
+        notes.append(f"{gaps['irregular_frac']:.0%} of DVL intervals skipped a ping: intermittent beam "
+                     "loss, not one outage; outside the hypothesis set")
+        return Diagnosis([(ABSTAIN, 1.0)] + _ranked(score), checks, None, notes)
 
     if not cross["ok"]:
         notes.append("imu_dvl cross-check inconclusive: " + cross["reason"])
         if score["dvl_dropout"] > 0.5:
             return Diagnosis(_ranked(score), checks, None, notes)
-        nxt = "surge_pulses" if tests_done == 1 else None
+        nxt = None
+        if tests_done == 1:        # nothing to separate yet: the test that separates all pairs best
+            nxt = choose_test(_ALL_PAIRS, {})[0]
+            notes.append(f"requesting {nxt}: best mean separation of all hypothesis pairs")
         return Diagnosis([(ABSTAIN, 1.0)] + _ranked(score), checks, nxt, notes)
 
     if cross["prior_violated"]:
@@ -319,13 +376,15 @@ def diagnose(logs: list[SensorLog] | SensorLog) -> Diagnosis:
         if cross["rot_axis"] in "xy":
             # A roll/pitch mount corrupts imu_q, so DVL-through-attitude disagrees with depth rate.
             # A trimmed vehicle does not: imu_q is right, only the level-at-rest prior is wrong.
-            sens = depth_sensitivity(logs[i_depth], cross["rot_axis"], cross["rot_deg"])
+            # Judge on the log where such a mount would show most (roll needs sway, pitch surge).
+            sens_all = [depth_sensitivity(l, cross["rot_axis"], cross["rot_deg"]) for l in logs]
+            i_depth = int(np.argmax(sens_all))
+            sens, depth = sens_all[i_depth], per[i_depth]["depth"]
             checks["depth"] = dict(depth, predicted_if_mount_mps=sens)
-            if depth["vertical_excitation"] < TH["depth_excite_mps"]:
-                need_depth = True                                  # cannot tell yet
-            elif sens < TH["depth_mps"]:
-                notes.append(f"depth cross-check cannot see a {cross['rot_axis']} rotation with this "
-                             "motion (needs sway for roll): mount vs trim unresolved, mount kept")
+            if sens < TH["depth_mps"]:
+                need_depth = True
+                notes.append(f"depth cross-check cannot see a {cross['rot_axis']} rotation with the motion "
+                             "so far: mount vs trim unresolved, mount kept")
             elif depth["mismatch_mps"] > TH["depth_mps"]:
                 s = _clip(s + 0.2)                                 # confirmed by depth
             else:
@@ -344,14 +403,22 @@ def diagnose(logs: list[SensorLog] | SensorLog) -> Diagnosis:
     next_test = None
     weak = cross["excitation"] < TH["excite_strong"]
     close = rank[0][1] - rank[1][1] < TH["close"]
-    if tests_done == 1 and need_depth and score["mount_rotation_" + cross["rot_axis"]] > 0.3:
-        next_test = "depth_bob"
-        notes.append("roll/pitch rotation unconfirmed without vertical motion: requesting depth_bob")
-    elif tests_done == 1 and (weak or close) and score["dvl_dropout"] < 0.5:
-        # next-test rule table (hand-set): low excitation -> surge; mount-vs-offset tie -> depth bob
-        top2 = {family(rank[0][0]), family(rank[1][0])}
-        next_test = "depth_bob" if (not weak and top2 == {"mount_rotation", "timestamp_offset"}) else "surge_pulses"
-        notes.append(f"{'weak excitation' if weak else 'top-2 close'}: requesting {next_test}")
+    mag = dict(rot_deg=cross["rot_deg"] if cross["rot_deg"] > TH["rot_deg"] else None,
+               lag_s=lag_eff if lag_eff > TH["lag_s"] else None)
+    mount = "mount_rotation_" + cross["rot_axis"]
+    if need_depth and tests_done <= 2 and score.get(mount, 0.0) > 0.3:
+        # mount vs trim: only the depth channel separates them, so pick the test that maximises it
+        t = max(TESTS, key=lambda t: predicted_evidence(t, mount, mag)[6])
+        gain = float(predicted_evidence(t, mount, mag)[6])
+        if gain > max(TH["depth_mps"], 1.5 * sens):
+            next_test = t
+            notes.append(f"requesting {t}: predicted depth mismatch {gain:.2f} m/s if the {cross['rot_axis']} "
+                         "rotation is a mount, none if it is vehicle trim")
+    if next_test is None and tests_done == 1 and (weak or close) and score["dvl_dropout"] < 0.5:
+        pairs = [(rank[0][0], rank[1][0])] if close and "dvl_dropout" not in (rank[0][0], rank[1][0]) else _ALL_PAIRS
+        next_test, sep = choose_test(pairs, mag)
+        notes.append(f"{'top-2 close' if close else 'weak excitation'}: requesting {next_test} "
+                     f"(predicted separation {sep:.2f})")
     return Diagnosis(rank, checks, next_test, notes)
 
 

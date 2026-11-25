@@ -120,8 +120,39 @@ def arm_holdout_cases() -> list[ArmSecret]:
     return out
 
 
-SPLITS = {"dev": dev_cases, "holdout": holdout_cases, "hard": hard_cases,
-          "arm_dev": arm_dev_cases, "arm_holdout": arm_holdout_cases}
+def arm_hard_cases() -> list[ArmSecret]:
+    """Arm realism the thresholds were never tuned on: Coulomb friction the nominal model lacks,
+    and gear backlash on the encoders.  Both are arm properties, present in every requested test."""
+    out = []
+    for prof in ("sweep", "fast_wave", "random_smooth"):
+        for prop in (dict(coulomb_nm=0.2), dict(backlash_rad=0.01)):
+            out.append(ArmSecret("healthy", prof, 20, {}, **prop))
+            out += [ArmSecret("encoder_offset", prof, 20, dict(joint=j, offset_rad=0.1), **prop) for j in (1, 2)]
+            out.append(ArmSecret("timestamp_offset", prof, 20, dict(offset_s=0.1), **prop))
+            out.append(ArmSecret("torque_dropout", prof, 20, dict(start_s=5.0, duration_s=2.0), **prop))
+    return out
+
+
+def blind_cases() -> list[Secret]:
+    """Second realism split, written after the hard split had been used for development and
+    run once with everything frozen: new seeds, new magnitudes, mixed offset+drift, a milder
+    trim, tripled sensor noise."""
+    out = []
+    for prof, trim in (("depth_bob", 0.0), ("random_wrench", 0.0), ("yaw_sweep", 0.5)):
+        out += [Secret("healthy", prof, 30, trim_nm=trim), Secret("healthy", prof, 31, trim_nm=trim),
+                Secret("healthy", prof, 30, trim_nm=trim, noise_x=3.0)]
+        out += [Secret("mount_rotation", prof, 30, dict(axis=ax, angle_deg=12.0), trim) for ax in "xyz"]
+        out.append(Secret("mount_rotation", prof, 30, dict(axis="y", angle_deg=40.0), trim))
+        out.append(Secret("timestamp_offset", prof, 30, dict(drift=-0.03), trim))
+        out.append(Secret("timestamp_offset", prof, 30, dict(offset_s=0.1, drift=0.01), trim))
+        out.append(Secret("dvl_dropout", prof, 30, dict(start_s=8.0, duration_s=1.5, nan=True), trim))
+        out.append(Secret("unknown", prof, 30, dict(kind="gyro_bias", bias_rps=0.03), trim))
+        out += [Secret("unknown", prof, 30, dict(kind="dvl_beam_loss", frac=f), trim) for f in (0.15, 0.45)]
+    return out
+
+
+SPLITS = {"dev": dev_cases, "holdout": holdout_cases, "hard": hard_cases, "blind": blind_cases,
+          "arm_dev": arm_dev_cases, "arm_holdout": arm_holdout_cases, "arm_hard": arm_hard_cases}
 
 # platform -> (generate, diagnose, baseline); chosen by the secret's type
 _AUV = (generate, diagnose, simple_checks)

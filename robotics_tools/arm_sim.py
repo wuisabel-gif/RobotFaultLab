@@ -13,9 +13,9 @@ from dataclasses import dataclass, field, replace
 
 import numpy as np
 
-from .arm_types import NOMINAL, ArmLog, inverse_dynamics
+from .arm_types import NOMINAL, TEST_DURATION_S, TESTS, ArmLog, inverse_dynamics, trajectory
 
-ENC_HZ, TAU_HZ, DURATION_S = 100.0, 50.0, 12.0
+ENC_HZ, TAU_HZ, DURATION_S = 100.0, 50.0, TEST_DURATION_S
 NOISE = dict(enc=1e-4, tau=0.05)     # rad, N m
 L2 = 0.30                            # link-2 length (payload attaches at the tip), m
 
@@ -26,6 +26,9 @@ class ArmSecret:
     profile: str
     seed: int
     params: dict = field(default_factory=dict)
+    # arm properties (not faults; they persist across requested extra tests)
+    coulomb_nm: float = 0.0      # Coulomb friction torque per joint, absent from the nominal model
+    backlash_rad: float = 0.0    # gear backlash seen by the motor-side encoders
 
 
 # ---- motion profiles: list of (centre, [(amplitude, omega, phase), ...]) per joint ----
@@ -35,25 +38,13 @@ def _sines(seed):
             for _ in range(2)]
 
 
-PROFILES = {
-    "hold":          lambda seed: [(0.6, []), (-0.8, [])],
-    "sweep":         lambda seed: [(0.5, [(0.6, 0.8, 0.0)]), (-0.7, [(0.8, 1.3, 0.5)])],
-    "shoulder_only": lambda seed: [(0.3, [(0.7, 1.0, 0.0)]), (-0.5, [])],
-    "elbow_only":    lambda seed: [(0.4, []), (-0.6, [(0.9, 1.2, 0.0)])],
-    "fast_wave":     lambda seed: [(0.2, [(0.4, 2.5, 0.0)]), (0.3, [(0.5, 3.1, 1.0)])],
-    "random_smooth": _sines,
-}
+# the catalogue tests (shared with the diagnostic) plus two evaluator-only motions
+PROFILES = {**{k: (lambda seed, v=v: v) for k, v in TESTS.items()},
+            "hold": lambda seed: [(0.6, []), (-0.8, [])], "random_smooth": _sines}
 
 
 def _trajectory(profile, seed, t):
-    q, qd, qdd = (np.zeros((len(t), 2)) for _ in range(3))
-    for j, (centre, terms) in enumerate(PROFILES[profile](seed)):
-        q[:, j] = centre
-        for a, w, ph in terms:
-            q[:, j] += a * np.sin(w * t + ph)
-            qd[:, j] += a * w * np.cos(w * t + ph)
-            qdd[:, j] -= a * w * w * np.sin(w * t + ph)
-    return q, qd, qdd
+    return trajectory(PROFILES[profile](seed), t)
 
 
 def generate(secret: ArmSecret) -> tuple[ArmLog, ArmSecret]:
@@ -67,8 +58,10 @@ def generate(secret: ArmSecret) -> tuple[ArmLog, ArmSecret]:
         lc2 = (m2 * NOMINAL.lc2 + mp * L2) / (m2 + mp)
         I2 = NOMINAL.I2 + m2 * (lc2 - NOMINAL.lc2) ** 2 + mp * (L2 - lc2) ** 2
         model = replace(NOMINAL, m2=m2 + mp, lc2=lc2, I2=I2)
-    q = _trajectory(secret.profile, secret.seed, enc_t)[0]
-    tau = inverse_dynamics(model, *_trajectory(secret.profile, secret.seed, tau_t))
+    q, qd_enc, _ = _trajectory(secret.profile, secret.seed, enc_t)
+    kin = _trajectory(secret.profile, secret.seed, tau_t)
+    tau = inverse_dynamics(model, *kin) + secret.coulomb_nm * np.tanh(kin[1] / 0.02)
+    q = q + 0.5 * secret.backlash_rad * np.tanh(qd_enc / 0.05)   # motor leads the link by half the gap
     log = ArmLog(enc_t, q + rng.normal(0, NOISE["enc"], q.shape),
                  tau_t, tau + rng.normal(0, NOISE["tau"], tau.shape))
     if fam == "encoder_offset":

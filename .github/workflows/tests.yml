@@ -18,3 +18,8 @@ jobs:
             https://raw.githubusercontent.com/wuisabel-gif/ros2bag_converter/77beec688e6e82e4db657fc1ca76c41689eba58d/skills/ros2bag-converter/scripts/ros2bag_convert.py
           echo "ROBOTICS_TOOLS_ROS2BAG=$RUNNER_TEMP/ros2bag/ros2bag_convert.py" >> "$GITHUB_ENV"
       - run: python -m pytest tests -q
+      # the installed package must work away from the checkout (no submodule on the path)
+      - run: |
+          pip install .
+          cd "$RUNNER_TEMP" && robotics-tools arm --fault enc_j2_0.1 --profile hold | grep "ranking: encoder_offset_j2"
+

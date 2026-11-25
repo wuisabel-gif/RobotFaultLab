@@ -10,9 +10,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from robotics_tools import evaluate  # noqa: E402
-from robotics_tools.arm_diagnose import ABSTAIN, diagnose, simple_checks  # noqa: E402
+from robotics_tools.arm_diagnose import _ALL_PAIRS, ABSTAIN, choose_test, diagnose, simple_checks  # noqa: E402
 from robotics_tools.arm_sim import ArmSecret, generate  # noqa: E402
-from robotics_tools.arm_types import NOMINAL, ArmLog, InvalidSensorLog, inverse_dynamics  # noqa: E402
+from robotics_tools.arm_types import NOMINAL, TESTS, ArmLog, InvalidSensorLog, inverse_dynamics  # noqa: E402
 from robotics_tools.diagnose import family  # noqa: E402
 
 
@@ -56,9 +56,27 @@ def test_dev_ranking(fam, params, want):
 
 def test_static_pose_abstains_then_resolves():
     d = diagnose(_log("encoder_offset", "hold", joint=1, offset_rad=0.1))
-    assert d.top1 == ABSTAIN and d.next_test == "sweep"
+    assert d.top1 == ABSTAIN and d.next_test == choose_test(_ALL_PAIRS, {})[0]
     r = evaluate.run_case(ArmSecret("encoder_offset", "hold", 0, dict(joint=1, offset_rad=0.1)))
-    assert r["extra_tests"] == ["sweep"] and r["top1"] == "encoder_offset_j1"
+    assert len(r["extra_tests"]) == 1 and r["top1"] == "encoder_offset_j1"
+
+
+def test_choose_test_follows_the_physics():
+    # two joint offsets are told apart by moving both joints, not by a test that parks one
+    t, sep = choose_test([("encoder_offset_j1", "encoder_offset_j2")], {})
+    assert t in TESTS and sep > 0.3
+    # a clock offset is most visible under the fastest motion
+    assert choose_test([("timestamp_offset", "healthy")], {})[0] == "fast_wave"
+    # a hypothesis that predicts nothing cannot be separated from healthy by any test
+    assert choose_test([("torque_dropout", "healthy")], {})[1] == 0.0
+
+
+def test_arm_properties_persist_and_change_the_data():
+    base = _log("healthy")
+    fr = generate(ArmSecret("healthy", "sweep", 0, coulomb_nm=0.2))[0]
+    bl = generate(ArmSecret("healthy", "sweep", 0, backlash_rad=0.01))[0]
+    assert 0.1 < np.abs(fr.tau - base.tau).max() <= 0.2 + 1e-9
+    assert 0.004 < np.abs(bl.enc_q - base.enc_q).max() <= 0.005 + 1e-9
 
 
 def test_baseline_cannot_name_a_clock_offset():

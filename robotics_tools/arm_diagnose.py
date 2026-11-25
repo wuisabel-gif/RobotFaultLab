@@ -15,7 +15,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from .arm_types import NOMINAL, ArmLog, InvalidSensorLog, inverse_dynamics, validate
+from .arm_types import (NOMINAL, TEST_DURATION_S, TESTS, ArmLog, InvalidSensorLog, inverse_dynamics,
+                        trajectory, validate)
 from .diagnose import ABSTAIN, Diagnosis, _clip, _interp, _ranked, _rms
 
 HYPOTHESES = ["healthy", "encoder_offset_j1", "encoder_offset_j2", "timestamp_offset", "torque_dropout"]
@@ -100,6 +101,37 @@ def model_torque_check(log: ArmLog, model=NOMINAL) -> dict:
                 offset_rad=[round(float(x), 4) for x in best[2]])
 
 
+# ---- next-test choice --------------------------------------------------------------
+NOMINAL_MAG = dict(offset_rad=0.1, lag_s=0.1)       # used when a hypothesis has no fitted magnitude
+_T = np.arange(0.0, TEST_DURATION_S, 0.02)
+
+
+def predicted_evidence(test: str, hyp: str, mag: dict, model=NOMINAL) -> np.ndarray:
+    """Torque residual (measured minus encoder-predicted, N m, (N,2)) that a hypothesis would
+    produce under a catalogue test, from the nominal model."""
+    true = inverse_dynamics(model, *trajectory(TESTS[test], _T))
+    if hyp.startswith("encoder_offset"):
+        q, qd, qdd = trajectory(TESTS[test], _T)
+        q = q.copy()
+        q[:, int(hyp[-1]) - 1] += mag.get(hyp) or NOMINAL_MAG["offset_rad"]
+        return true - inverse_dynamics(model, q, qd, qdd)
+    if hyp == "timestamp_offset":      # encoder clock ahead: a sample stamped t shows q(t - lag)
+        return true - inverse_dynamics(model, *trajectory(TESTS[test], _T - (mag.get("lag_s") or NOMINAL_MAG["lag_s"])))
+    return np.zeros_like(true)          # healthy / torque_dropout: motion-independent
+
+
+def choose_test(pairs, mag) -> tuple[str, float]:
+    """Catalogue test whose predicted residuals differ most (mean rms, N m) across the pairs."""
+    sep = {t: float(np.mean([_rms(predicted_evidence(t, a, mag) - predicted_evidence(t, b, mag))
+                             for a, b in pairs])) for t in TESTS}
+    best = max(sep, key=sep.get)
+    return best, sep[best]
+
+
+_MOTION_HYPS = ["healthy", "encoder_offset_j1", "encoder_offset_j2", "timestamp_offset"]
+_ALL_PAIRS = [(a, b) for i, a in enumerate(_MOTION_HYPS) for b in _MOTION_HYPS[i + 1:]]
+
+
 def diagnose(logs: list[ArmLog] | ArmLog) -> Diagnosis:
     logs = [logs] if isinstance(logs, ArmLog) else list(logs)
     if not logs:
@@ -117,7 +149,11 @@ def diagnose(logs: list[ArmLog] | ArmLog) -> Diagnosis:
         notes.append("model_torque cross-check inconclusive: " + cross["reason"])
         if score["torque_dropout"] > 0.5:
             return Diagnosis(_ranked(score), checks, None, notes)
-        return Diagnosis([(ABSTAIN, 1.0)] + _ranked(score), checks, "sweep" if first else None, notes)
+        nxt = None
+        if first:                       # nothing to separate yet: best mean separation of all pairs
+            nxt = choose_test(_ALL_PAIRS, {})[0]
+            notes.append(f"requesting {nxt}: best mean separation of all hypothesis pairs")
+        return Diagnosis([(ABSTAIN, 1.0)] + _ranked(score), checks, nxt, notes)
 
     if abs(cross["lag_s"]) > TH["lag_s"]:
         score["timestamp_offset"] = _clip(cross["lag_removed"] / TH["evidence_nm"]) \
@@ -135,8 +171,12 @@ def diagnose(logs: list[ArmLog] | ArmLog) -> Diagnosis:
     rank = _ranked(score)
     next_test = None
     if first and rank[0][1] - rank[1][1] < TH["close"] and score["torque_dropout"] < 0.5:
-        next_test = "elbow_only"      # moves one joint alone: separates joint-1 from joint-2 offsets
-        notes.append("top-2 close: requesting elbow_only")
+        mag = {f"encoder_offset_j{j + 1}": abs(o) if abs(o) > TH["off_rad"] else None
+               for j, o in enumerate(cross["offset_rad"])}
+        mag["lag_s"] = abs(cross["lag_s"]) if abs(cross["lag_s"]) > TH["lag_s"] else None
+        pair = (rank[0][0], rank[1][0])
+        next_test, sep = choose_test([pair] if "torque_dropout" not in pair else _ALL_PAIRS, mag)
+        notes.append(f"top-2 close: requesting {next_test} (predicted separation {sep:.2f} N m)")
     return Diagnosis(rank, checks, next_test, notes)
 
 

@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "robotics-tools"
+version = "0.1.0"
+description = "Cross-check sensor-fault diagnosis for robots (AUV and robot arm): ranks faults, abstains when unsure, names the next test. Simulation only."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Isabel Wu" }]
+dependencies = ["numpy>=1.26"]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[project.urls]
+Repository = "https://github.com/wuisabel-gif/robotics-tools"
+
+[project.scripts]
+robotics-tools = "robotics_tools.__main__:main"
+
+[tool.setuptools]
+packages = ["robotics_tools"]
+
+[tool.setuptools.package-data]
+robotics_tools = ["*.yaml"]
